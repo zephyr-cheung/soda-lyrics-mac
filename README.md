@@ -158,6 +158,6 @@ tail -f /tmp/soda-lyrics-rust.log    # Rust 侧日志（换歌/白名单/歌词�
 - [汽水音乐](https://www.qishui.com/) —— 本项目服务的上游播放器（抖音官方出品）
 - [Homebrew](https://brew.sh) —— 分发与开机自启（`brew services`）方案
 - [Swift / SwiftUI](https://www.swift.org) 与 [Rust](https://www.rust-lang.org) —— 开发语言与工具链
-- 调研参考：`qishui-api`（歌词接口链路）、`mediaremote-rs`（MediaRemote 适配，未输出真实进度故自写插件替代）
+- 调研参考：[qishui-api](https://github.com/guowenye/qishui-api)（歌词接口链路）、[mediaremote-rs](https://github.com/TNXG/mediaremote-rs)（MediaRemote 适配，未输出真实进度故自写插件替代）
 
 感谢所有开源生态与 [@zephyr-cheung](https://github.com/zephyr-cheung) 的维护 ❤️

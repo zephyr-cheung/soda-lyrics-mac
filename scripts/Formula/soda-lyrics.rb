@@ -31,6 +31,16 @@ class SodaLyrics < Formula
   depends_on "python@3.12"
 
   def install
+    # 0) cargo 镜像（墙内友好；rsproxy 全球可访问，不影响海外构建）
+    (buildpath/".cargo/config.toml").write <<~EOS
+      [source.crates-io]
+      replace-with = "rsproxy-sparse"
+      [source.rsproxy-sparse]
+      registry = "sparse+https://rsproxy.cn/index/"
+      [net]
+      git-fetch-with-cli = true
+    EOS
+
     # 1) Rust core（release，LTO）
     system "cargo", "build", "--release"
 
