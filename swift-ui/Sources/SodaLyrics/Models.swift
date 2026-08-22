@@ -24,6 +24,14 @@ public struct NowPlaying: Sendable {
     public let isPlaying: Bool
 }
 
+/// 歌词搜索候选（供面板手动切换歌词源）
+public struct LyricCandidate: Identifiable, Sendable {
+    public let id: String
+    public let title: String
+    public let artist: String
+    public let durationMs: Int
+}
+
 public func formatClock(_ ms: Double) -> String {
     let s = max(0, Int(ms) / 1000)
     return String(format: "%02d:%02d", s / 60, s % 60)

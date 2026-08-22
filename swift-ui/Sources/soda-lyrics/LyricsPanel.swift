@@ -10,6 +10,7 @@ struct LyricsPanel: View {
             Divider().padding(.vertical, 8)
             lyricArea
         }
+        .padding(12)
         .frame(width: 360, height: 420)
         .onAppear { store.start() }
         .onReceive(Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()) { _ in store.pulse() }
@@ -35,6 +36,64 @@ struct LyricsPanel: View {
 
                 }
             }
+            if !(store.candidates.isEmpty && store.lyricCredit.isEmpty && store.status != .error && store.status != .noResult) {
+                sourceRow
+            }
+        }
+    }
+
+    /// 歌词源行：候选 Menu（手动切换）+ 失败时的刷新按钮
+    private var sourceRow: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "music.note.list")
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+            if store.candidates.isEmpty {
+                Text("歌词源：\(store.selectedCandidateLabel)")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            } else {
+                Menu {
+                    ForEach(store.candidates) { c in
+                        Button {
+                            store.pickCandidate(c.id)
+                        } label: {
+                            if c.id == store.selectedTrackId {
+                                Label("\(c.title) · \(c.artist)（\(formatClock(Double(c.durationMs)))）", systemImage: "checkmark")
+                            } else {
+                                Text("\(c.title) · \(c.artist)（\(formatClock(Double(c.durationMs)))）")
+                            }
+                        }
+                    }
+                } label: {
+                    HStack(spacing: 3) {
+                        Text("歌词源：\(store.selectedCandidateLabel)")
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        Image(systemName: "chevron.up.chevron.down")
+                            .font(.system(size: 7))
+                    }
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    // 弹性占满可用宽度（不可用 fixedSize：会按理想尺寸撑开导致超宽）
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .menuStyle(.borderlessButton)
+                .fixedSize(horizontal: false, vertical: true)
+            }
+            Spacer()
+            if store.status == .error || store.status == .noResult {
+                Button {
+                    store.refresh()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("重新搜索当前歌曲")
+            }
         }
     }
 
@@ -48,7 +107,7 @@ struct LyricsPanel: View {
         case .noResult:
             hint("未找到这首歌的歌词", detail: store.now.title + " - " + store.now.artist)
         case .error:
-            hint("歌词获取失败", detail: "请检查网络后点击右上角刷新")
+            hint("歌词获取失败", detail: "请检查网络，或点右下角刷新按钮重新搜索")
         case .loading:
             VStack { Spacer(); ProgressView().controlSize(.small); Spacer() }.frame(maxWidth: .infinity)
         default:

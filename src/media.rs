@@ -1,10 +1,10 @@
-//! 播放信息采集：mediaremote-rs 适配器（长驻 stream 模式，零重复 fork）
-//! 进度策略：适配器不下发 elapsed（恒 0），增量推进：播放中累加墙钟差，暂停冻结，换歌清零
+//! 播放信息采集：spawn python3 代理（ctypes 调 libmr_full.dylib），长驻 stream 模式，零重复 fork
+//! 进度策略：信任系统真实进度 elC = 当前墙钟 - CurrentPlaybackDate（精确、无漂移）；暂停冻结
 use serde_json::Value;
 use std::io::{BufRead, BufReader};
 use std::process::{Child, Command, Stdio};
-use std::sync::mpsc::{channel, Receiver, Sender};
-use std::time::{Duration, Instant};
+use std::sync::mpsc::{channel, Receiver};
+use std::time::Instant;
 
 /// 采集到的播放快照
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -34,19 +34,7 @@ pub struct StreamRow {
     pub elapsed_ms: f64,
 }
 
-/// Perl 装载器：常驻循环调用我们插件的 get_full_json（输出全量字段含真实进度 elC）
 
-/// Perl 装载器：常驻循环调用插件 mr_get_full_json（autoflush + 绝对路径）
-const LOADER: &str = concat!(
-    "use strict; use warnings; use DynaLoader;\n",
-    "$| = 1;\n",
-    "my $dylib = shift or exit 1;\n",
-    "my $interval = $ENV{MEDITA_RS_INTERVAL_MS} || 500;\n",
-    "my $h = DynaLoader::dl_load_file($dylib, 0) or exit 1;\n",
-    "my $s = DynaLoader::dl_find_symbol($h, \"mr_get_full_json\") or exit 1;\n",
-    "DynaLoader::dl_install_xsub(\"main::get\", $s);\n",
-    "while (1) { main::get(); select undef, undef, undef, $interval / 1000.0; }\n",
-);
 /// 常驻 stream：启动 perl + dylib（一次 fork），按 interval_ms 持续输出 JSON 行
 pub fn spawn_stream_source(interval_ms: u64) -> (Option<Child>, Receiver<StreamRow>) {
     let (tx, rx) = channel::<StreamRow>();
@@ -112,25 +100,29 @@ pub fn spawn_stream_source(interval_ms: u64) -> (Option<Child>, Receiver<StreamR
     }
 }
 
-/// 定位适配器 dylib：开发目录 resources 或 App Bundle Resources
+/// 定位采集插件 dylib（相对定位，不依赖绝对路径）：
+/// 1) 打包分发：与可执行文件同目录（bundle Resources）
+/// 2) 开发目录：沿可执行文件逐级向上找 <root>/resources/libmr_full.dylib
+/// 3) cwd 兜底：<cwd>/resources/libmr_full.dylib
 fn locate_dylib() -> Option<String> {
-    let candidates = [
-        // 开发路径
-        format!("{}/Desktop/Project/soda-music-tui/soda-lyrics-mac/resources/libmr_full.dylib", home()),
-        // bundle 内
-        std::env::current_exe()
-            .ok()
-            .and_then(|p| {
-                p.parent()
-                    .map(|d| d.join("libmediaremote_rs.dylib").to_string_lossy().to_string())
-            })
-            .unwrap_or_default(),
-    ];
+    let mut candidates: Vec<String> = Vec::new();
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(dir) = exe.parent() {
+            candidates.push(dir.join("libmr_full.dylib").to_string_lossy().to_string());
+        }
+        let mut dir = exe.parent();
+        while let Some(d) = dir {
+            candidates.push(d.join("resources").join("libmr_full.dylib").to_string_lossy().to_string());
+            if d.as_os_str().is_empty() {
+                break; // 防御：parent 链抵达路径起点（空路径）即终止
+            }
+            dir = d.parent();
+        }
+    }
+    if let Ok(cwd) = std::env::current_dir() {
+        candidates.push(cwd.join("resources").join("libmr_full.dylib").to_string_lossy().to_string());
+    }
     candidates.iter().find(|p| std::path::Path::new(p).exists()).cloned()
-}
-
-fn home() -> String {
-    std::env::var("HOME").unwrap_or_else(|_| "/Users/Shared".to_string())
 }
 
 /// 采集器：消化 stream 行 + 增量推进
@@ -257,4 +249,3 @@ impl Collector {
     }
 }
 
-pub fn _unused(_: Duration) {}

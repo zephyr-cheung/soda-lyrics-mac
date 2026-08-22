@@ -18,18 +18,23 @@
 2. **Rust core**（`src/`，`cargo build --release`）
    - `main.rs`：主循环——白名单过滤 → 状态合并 → 100ms 快照 JSONL；换歌时发全量歌词
    - `media.rs`：spawn python 代理（ctypes 调 dylib）→ 解析 → 真实进度合成（elC）
-   - `api.rs`：volcengine 搜索（best-match 防翻唱）+ beta-luna `h5_seo_track` 词级歌词
+   - `api.rs`：volcengine 搜索（limit=20，时长匹配过滤剔除不一致候选）+ beta-luna `h5_seo_track` 词级歌词
    - `lyrics.rs`：词级解析（全角逗号归一化、词间空格、句级+词级）
    - `store.rs`：采集线程（100ms 帧）+ 歌词加载线程
 3. **python 代理**（macOS 自带 `/usr/bin/python3`，一次 fork 常驻）
    - `resources/libmr_full.dylib`（自写 ObjC 插件，源码 `libmr_full.m`）→ `MRMediaRemoteGetNowPlayingInfo`
    - 200ms 循环输出 `{title,artist,dur,rate,elC}`
 
-## 通信协议（core → Swift，stdout JSONL）
+## 通信协议（JSONL）
 
+**core → Swift（stdout）**
 - 快照：`{"t":"snap","title":...,"artist":...,"pos":...,"dur":...,"playing":...}`（100ms 一条）
-- 歌词：`{"t":"lyrics","title":...,"artist":...,"credit":...,"lines":[{"s":起始ms,"e":结束ms,"t":"文本","w":[{"o":偏移,"d":时长,"t":"词"}]}]}`（换歌时一条）
-- 请保持协议兼容；Swift 端 `PipelineStore.handle` 解析。
+- 歌词：`{"t":"lyrics","title":...,"artist":...,"credit":...,"track_id":...,"fail":"none|noresult|error","lines":[...]}`（换歌/手动切换时一条；`fail` 区分无结果与接口错误）
+- 候选：`{"t":"candidates","title":...,"artist":...,"items":[{"id","title","artist","dur"}]}`（自动搜索完成后一条，已时长过滤）
+
+**Swift → core（stdin）**
+- `{"t":"pick","id":"..."}`：手动指定候选（同曲目内不再自动降级）
+- `{"t":"refresh"}`：清手动选择，重新自动搜索当前曲目
 
 ## 关键技术结论（重要，勿推翻）
 

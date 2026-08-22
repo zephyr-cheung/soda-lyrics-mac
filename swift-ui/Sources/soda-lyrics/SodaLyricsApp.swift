@@ -30,7 +30,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.behavior = .transient
 
         let t = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
-            self?.redraw()
+            guard let self else { return }
+            Task { @MainActor in self.redraw() }
         }
         RunLoop.main.add(t, forMode: .common)
         drawTimer = t
@@ -79,13 +80,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+/// 纯 AppKit 入口：不再使用 SwiftUI App 外壳（其 Settings scene 会在应用菜单注册
+/// 无内容的「设置…」项，菜单栏工具不需要），直接以 AppDelegate 驱动
 @main
-struct SodaLyricsApp: App {
-    @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
-
-    var body: some Scene {
-        Settings {
-            EmptyView()
-        }
+enum SodaLyricsMain {
+    @MainActor
+    static func main() {
+        let app = NSApplication.shared
+        // 菜单栏工具：不占 Dock、不抢焦点（SwiftUI App 外壳默认 .regular 会显示 Dock 图标）
+        app.setActivationPolicy(.accessory)
+        let delegate = AppDelegate()
+        app.delegate = delegate
+        app.run()
     }
 }

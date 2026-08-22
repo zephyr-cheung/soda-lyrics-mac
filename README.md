@@ -43,7 +43,7 @@ soda-lyrics-mac/
 ├── src/
 │   ├── main.rs           # 主循环：白名单过滤 → 状态合并 → JSONL 输出（快照 100ms + 换歌全量歌词）
 │   ├── media.rs          # 采集器：spawn python 代理、解析行、真实进度合成
-│   ├── api.rs            # 官方接口：volcengine 搜索（best-match 防翻唱）+ h5_seo_track 词级歌词
+│   ├── api.rs            # 官方接口：volcengine 搜索（limit=20 + 时长匹配过滤）+ h5_seo_track 词级歌词
 │   ├── lyrics.rs         # 词级歌词解析器（全角逗号归一化、词间空格规则、句级+词级）
 │   └── store.rs          # 采集线程 / 歌词加载线程（mpsc 通信）
 ├── swift-ui/

@@ -3,17 +3,35 @@ mod lyrics;
 mod media;
 mod store;
 
-use serde_json::json;
-use std::io::Write;
-use std::sync::mpsc::channel;
+use serde_json::{json, Value};
+use std::io::{BufRead, Write};
+use std::sync::mpsc::{channel, Sender};
 use std::time::Duration;
 
 fn main() {
     store::log("soda-core starting");
     let (_stop_tx, stop_rx) = channel::<()>();
     let snap_rx = store::spawn_collector(stop_rx);
-    let (loader_tx, loader_rx): (std::sync::mpsc::Sender<(String, String, String)>, _) = channel();
+    let (loader_tx, loader_rx): (Sender<store::LoadRequest>, _) = channel();
     let lyrics_rx = store::spawn_lyrics_loader(loader_rx);
+
+    // stdin 指令通道（Swift UI -> core）：{"t":"pick","id":...} / {"t":"refresh"}
+    let (stdin_tx, stdin_rx) = channel::<String>();
+    std::thread::spawn(move || {
+        let stdin = std::io::stdin();
+        let mut lock = stdin.lock();
+        let mut line = String::new();
+        loop {
+            line.clear();
+            match lock.read_line(&mut line) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {
+                    let l = line.trim().to_string();
+                    if l.is_empty() || stdin_tx.send(l).is_err() { break }
+                }
+            }
+        }
+    });
 
     let mut loaded_key = String::new();
     let mut pending_key = String::new();
@@ -23,14 +41,16 @@ fn main() {
     let mut dur = 0.0f64;
     let mut playing = false;
     let mut lines: Vec<lyrics::LyricLine> = Vec::new();
+    // 当前曲目候选列表（手动切换用；换歌清空）
+    let mut current_candidates: Vec<api::Track> = Vec::new();
+    // 手动指定的 track id（UI 切换后记录；换歌清空，重播同歌时沿用）
+    let mut manual_id: Option<String> = None;
 
     let mut out = std::io::stdout();
-    let mut first = true;
     loop {
         // 采集快照（三段式：汽水 / 查询失败保持现状 / 其他 App 清空）
         while let Some(snap) = store::recv_timeout(&snap_rx, 0) {
             let app_id = snap.app_id.clone();
-            let mut cleared = false;
             if app_id == "com.soda.music" {
                 title = snap.title.clone();
                 artist = snap.artist.clone();
@@ -41,8 +61,16 @@ fn main() {
                     loaded_key = snap.title.clone();
                     pending_key = snap.title.clone();
                     lines.clear();
+                    manual_id = None;
+                    current_candidates.clear();
                     loader_tx
-                        .send((snap.title.clone(), snap.title.clone(), snap.artist.clone()))
+                        .send(store::LoadRequest {
+                            key: snap.title.clone(),
+                            title: snap.title.clone(),
+                            artist: snap.artist.clone(),
+                            player_dur_ms: snap.duration_ms,
+                            manual: None,
+                        })
                         .ok();
                     store::log(&format!("track-change -> {}", snap.title));
                 }
@@ -60,13 +88,56 @@ fn main() {
                     lines.clear();
                     loaded_key.clear();
                     pending_key.clear();
+                    manual_id = None;
+                    current_candidates.clear();
                     let empty_msg = json!({"t": "lyrics", "title": "", "artist": "", "credit": "", "lines": []});
                     let _ = writeln!(out, "{}", serde_json::to_string(&empty_msg).unwrap_or_default());
                     let _ = out.flush();
-                    cleared = true;
                 }
             }
-            let _ = cleared;
+        }
+        // Swift UI 指令（pick / refresh）
+        while let Ok(cmd) = stdin_rx.try_recv() {
+            if let Ok(v) = serde_json::from_str::<Value>(&cmd) {
+                match v.get("t").and_then(|x| x.as_str()) {
+                    Some("pick") => {
+                        if let Some(id) = v.get("id").and_then(|x| x.as_str()) {
+                            if let Some(t) = current_candidates.iter().find(|t| t.id == id) {
+                                manual_id = Some(id.to_string());
+                                pending_key = title.clone();
+                                lines.clear();
+                                loader_tx.send(store::LoadRequest {
+                                    key: title.clone(),
+                                    title: title.clone(),
+                                    artist: artist.clone(),
+                                    player_dur_ms: dur,
+                                    manual: Some(t.clone()),
+                                }).ok();
+                                store::log(&format!("user pick -> {} {}", id, t.title));
+                            } else {
+                                store::log(&format!("pick ignored (id not in candidates): {}", id));
+                            }
+                        }
+                    }
+                    Some("refresh") => {
+                        manual_id = None;
+                        current_candidates.clear();
+                        pending_key = title.clone();
+                        lines.clear();
+                        if !title.is_empty() {
+                            loader_tx.send(store::LoadRequest {
+                                key: title.clone(),
+                                title: title.clone(),
+                                artist: artist.clone(),
+                                player_dur_ms: dur,
+                                manual: None,
+                            }).ok();
+                            store::log("refresh -> re-search current track");
+                        }
+                    }
+                    _ => {}
+                }
+            }
         }
         // 歌词结果
         loop {
@@ -75,7 +146,17 @@ fn main() {
                     if pending_key == payload.track_key || pending_key.is_empty() {
                         lines = payload.lines;
                         pending_key.clear();
-                        // 发送完整歌词
+                        // 自动流程的候选列表 -> UI（手动指定时 payload.candidates 为空，不重发）
+                        if !payload.candidates.is_empty() {
+                            current_candidates = payload.candidates.clone();
+                            let items: Vec<serde_json::Value> = payload.candidates.iter()
+                                .map(|t| json!({"id": t.id, "title": t.title, "artist": t.artist, "dur": t.duration_ms}))
+                                .collect();
+                            let cand_msg = json!({"t": "candidates", "title": title, "artist": artist, "items": items});
+                            let _ = writeln!(out, "{}", serde_json::to_string(&cand_msg).unwrap_or_default());
+                            let _ = out.flush();
+                        }
+                        // 完整歌词
                         let lines_json: Vec<serde_json::Value> = lines
                             .iter()
                             .map(|l| {
@@ -87,17 +168,24 @@ fn main() {
                                 })
                             })
                             .collect();
+                        let fail = match payload.fail {
+                            store::FailKind::None => "none",
+                            store::FailKind::NoResult => "noresult",
+                            store::FailKind::Error => "error",
+                        };
                         let msg = json!({
                             "t": "lyrics",
                             "title": title,
                             "artist": artist,
                             "credit": payload.credit,
+                            "track_id": payload.track_id,
+                            "fail": fail,
                             "lines": lines_json,
                         });
                         let line = serde_json::to_string(&msg).unwrap_or_default();
                         let _ = writeln!(out, "{}", line);
                         let _ = out.flush();
-                        store::log(&format!("lyrics sent {} lines", lines.len()));
+                        store::log(&format!("lyrics sent {} lines fail={} manual={}", lines.len(), fail, manual_id.is_some()));
                     }
                 }
                 Err(_) => break,
@@ -116,7 +204,6 @@ fn main() {
         let line = serde_json::to_string(&snap_msg).unwrap_or_default();
         let _ = writeln!(out, "{}", line);
         let _ = out.flush();
-        first = false;
         std::thread::sleep(Duration::from_millis(100));
     }
 }
