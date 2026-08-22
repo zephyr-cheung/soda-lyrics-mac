@@ -134,17 +134,21 @@ public final class NowPlayingStore: ObservableObject {
     /// 定位 Rust core 二进制（相对定位，不依赖绝对路径）：
     /// 1) bundle Resources 下的 soda-core（打包分发；不找 soda-lyrics——
     ///    裸二进制开发场景下 resourceURL 即可执行文件目录，该名会命中程序自身导致自 spawn）
-    /// 2) 沿可执行文件逐级向上找 <root>/target/release/soda-lyrics（开发目录）
-    /// 3) cwd 兜底：<cwd>/target/release/soda-lyrics
+    /// 2) Homebrew 布局：<prefix>/bin/soda-lyrics 的上一级 libexec/soda-core
+    /// 3) 沿可执行文件逐级向上找 <root>/target/release/soda-lyrics（开发目录）
+    /// 4) cwd 兜底：<cwd>/target/release/soda-lyrics
     private func locateCore() -> URL? {
         var candidates: [URL?] = [
             Bundle.main.resourceURL?.appendingPathComponent("soda-core"),
         ]
-        var dir = Bundle.main.executableURL?.deletingLastPathComponent()
-        // 注意：URL.deletingLastPathComponent() 对根路径 "/" 返回自身（自引用），必须显式终止
-        while let d = dir, !d.path.isEmpty, d.path != "/" {
-            candidates.append(d.appendingPathComponent("target/release/soda-lyrics"))
-            dir = d.deletingLastPathComponent()
+        if let exeDir = Bundle.main.executableURL?.deletingLastPathComponent() {
+            candidates.append(exeDir.appendingPathComponent("../libexec/soda-core"))
+            var dir: URL? = exeDir
+            // 注意：URL.deletingLastPathComponent() 对根路径 "/" 返回自身（自引用），必须显式终止
+            while let d = dir, !d.path.isEmpty, d.path != "/" {
+                candidates.append(d.appendingPathComponent("target/release/soda-lyrics"))
+                dir = d.deletingLastPathComponent()
+            }
         }
         candidates.append(
             URL(fileURLWithPath: FileManager.default.currentDirectoryPath)

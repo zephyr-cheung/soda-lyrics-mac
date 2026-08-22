@@ -35,7 +35,28 @@ pub struct StreamRow {
 }
 
 
-/// 常驻 stream：启动 perl + dylib（一次 fork），按 interval_ms 持续输出 JSON 行
+/// 定位 python 解释器（采集代理必须经解释器进程；MediaRemote 对原生二进制返回 null）：
+/// 1) 环境变量 SODA_PYTHON（brew service 注入，指向 brew python@3.x）
+/// 2) Homebrew python（Intel /opt/usr 两个 prefix 探测）
+/// 3) 系统自带 /usr/bin/python3（依赖 CommandLineTools）
+fn locate_python() -> String {
+    if let Ok(p) = std::env::var("SODA_PYTHON") {
+        if !p.is_empty() { return p }
+    }
+    let candidates = [
+        "/opt/homebrew/bin/python3",
+        "/usr/local/bin/python3",
+        "/usr/bin/python3",
+    ];
+    for c in candidates {
+        if std::path::Path::new(c).exists() {
+            return c.to_string();
+        }
+    }
+    "/usr/bin/python3".to_string()
+}
+
+/// 常驻 stream：启动 python + dylib（一次 fork），按 interval_ms 持续输出 JSON 行
 pub fn spawn_stream_source(interval_ms: u64) -> (Option<Child>, Receiver<StreamRow>) {
     let (tx, rx) = channel::<StreamRow>();
     let dylib = locate_dylib();
@@ -46,7 +67,7 @@ pub fn spawn_stream_source(interval_ms: u64) -> (Option<Child>, Receiver<StreamR
         "import ctypes,time,sys\nlib=ctypes.CDLL(sys.argv[1])\nf=lib.mr_get_full_json\nwhile True:\n    f()\n    sys.stdout.flush()\n    time.sleep({})\n",
         (interval_ms.max(200) as f64) / 1000.0
     );
-    match Command::new("/usr/bin/python3")
+    match Command::new(locate_python())
         .arg("-u")
         .arg("-c")
         .arg(&py)
