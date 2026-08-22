@@ -86,8 +86,8 @@ class SodaLyrics < Formula
 
       使用前提：
         - 汽水音乐 App 正在播放（仅响应 com.soda.music，其他 App 播放自动清空）
-        - 首次使用在 系统设置 → 隐私与安全性 → 辅助功能 勾选本程序
-          （读取播放状态授权；若使用 brew 的 python 解释器也需一并授权）
+        - MRMediaRemoteGetNowPlayingInfo 为系统公开读取接口，**无需**辅助功能授权
+          （辅助功能仅对「控制播放」类操作必需，本应用只读取）
         - 歌词来自 volcengine 公开搜索接口，需要网络
       日志：
         tail -f #{HOMEBREW_PREFIX}/var/log/soda-lyrics-swift.log
