@@ -1,6 +1,19 @@
-# 汽水歌词 · SodaLyrics
+# 🎵 汽水歌词 · SodaLyrics
 
-macOS 菜单栏歌词助手：在**顶部状态栏**实时显示汽水音乐（桌面版）正在播放的滚动歌词；点击菜单栏图标展开**卡拉OK面板**（逐字高亮、自动滚动、真实进度）。
+macOS 菜单栏歌词助手：在**顶部状态栏**实时显示汽水音乐（桌面版）正在播放的滚动歌词；点击歌词展开**卡拉OK面板**（逐字高亮、自动滚动、真实进度）。
+
+<p align="center">
+  <img src="https://img.shields.io/github/stars/zephyr-cheung/soda-lyrics-mac?style=flat-square&logo=github" alt="GitHub stars">
+  <img src="https://img.shields.io/github/license/zephyr-cheung/soda-lyrics-mac?style=flat-square" alt="License">
+  <img src="https://img.shields.io/badge/language-Swift%20%C2%B7%20Rust%20%C2%B7%20Python-blue?style=flat-square" alt="Language: Swift · Rust · Python">
+  <a href="https://github.com/zephyr-cheung/homebrew-tap"><img src="https://img.shields.io/badge/homebrew-tap-orange?style=flat-square&logo=homebrew" alt="Homebrew tap"></a>
+  <img src="https://img.shields.io/badge/macOS-13%2B-black?style=flat-square&logo=apple" alt="macOS 13+">
+  <img src="https://img.shields.io/badge/target-%E6%B1%BD%E6%B0%B4%E9%9F%B3%E4%B9%90-green?style=flat-square" alt="Target: 汽水音乐">
+</p>
+
+<p align="center">
+  <img src="docs/panel.png" alt="卡拉OK面板截图" width="420">
+</p>
 
 ```
 ┌──────────────────────────────────────────────┐
@@ -139,3 +152,12 @@ tail -f /tmp/soda-lyrics-rust.log    # Rust 侧日志（换歌/白名单/歌词�
 ## 隐私
 
 全程本地处理；仅歌词获取需访问网络（上游公开接口）；不读取账号数据、不写 Cookie/Token。
+
+## 参考与鸣谢
+
+- [汽水音乐](https://www.qishui.com/) —— 本项目服务的上游播放器（抖音官方出品）
+- [Homebrew](https://brew.sh) —— 分发与开机自启（`brew services`）方案
+- [Swift / SwiftUI](https://www.swift.org) 与 [Rust](https://www.rust-lang.org) —— 开发语言与工具链
+- 调研参考：`qishui-api`（歌词接口链路）、`mediaremote-rs`（MediaRemote 适配，未输出真实进度故自写插件替代）
+
+感谢所有开源生态与 [@zephyr-cheung](https://github.com/zephyr-cheung) 的维护 ❤️
