@@ -1,0 +1,19 @@
+# Rust（core）
+/target
+Cargo.lock
+
+# Swift UI
+/swift-ui/.build/
+/swift-ui/Package.resolved
+*.xcodeproj
+xcuserdata/
+
+# 构建产物与临时
+*.dylib
+!resources/libmr_full.dylib
+*.log
+*.tmp
+.DS_Store
+
+# 敏感/调试
+/tmp/
