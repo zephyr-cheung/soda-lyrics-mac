@@ -170,7 +170,6 @@ struct LyricsPanel: View {
                 LazyVStack(spacing: 10) {
                     ForEach(Array(store.lines.enumerated()), id: \.offset) { idx, line in
                         LyricRow(line: line, isCurrent: idx == store.currentIndex,
-                                 sungWord: idx == store.currentIndex ? LyricParser.currentWordIndex(line, positionMs: store.displayPositionMs) : nil,
                                  positionMs: store.displayPositionMs)
                             .id(idx)
                     }
@@ -205,74 +204,144 @@ struct LyricsPanel: View {
     }
 }
 
-/// 单行歌词（当前行词级卡拉OK染色）
+/// 单行歌词（当前行字符级卡拉OK：字符内部按进度渐变填充，对标汽水客户端）
 struct LyricRow: View {
     let line: LyricLine
     let isCurrent: Bool
-    let sungWord: Int?
-    /// 当前播放进度（ms）：正在唱的词按词内时间进度逐字点亮，避免词级二值跳变
+    /// 当前播放进度（ms）：当前行按字符时间窗逐字点亮，正在唱的字符内部渐变填充
     let positionMs: Double
 
-    var body: some View {
-        Text(attributed)
-            .font(.system(size: isCurrent ? 16 : 13, weight: isCurrent ? .semibold : .regular))
-            .foregroundStyle(.secondary)
-            .multilineTextAlignment(.center)
-            .frame(maxWidth: .infinity)
-            .padding(.horizontal, 12)
+    /// 展开后的字符单元（含词间空格；字符时间 = 词内均分词时长）
+    private struct CharUnit {
+        let ch: Character
+        let startMs: Int
+        let durMs: Int
     }
 
-    private var attributed: AttributedString {
-        var out = AttributedString()
-        guard !line.words.isEmpty else {
-            var a = AttributedString(line.text)
-            if isCurrent { a.foregroundColor = .primary }
-            return a
+    var body: some View {
+        if isCurrent, !charUnits.isEmpty {
+            // 当前行：逐字符布局（自动换行 + 行居中），字符内渐变填充
+            CharFlowLayout {
+                ForEach(Array(charUnits.enumerated()), id: \.offset) { _, u in
+                    unitText(u)
+                }
+            }
+            .font(.system(size: 16, weight: .semibold))
+            // 未唱字符底色（已唱/正在唱由 unitText 各自覆盖）
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 12)
+        } else {
+            Text(line.text)
+                .font(.system(size: isCurrent ? 16 : 13, weight: isCurrent ? .semibold : .regular))
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: .infinity)
+                .padding(.horizontal, 12)
         }
-        // sungWord=nil 只在「本行未开始或词未开始」时出现（词间间隙已由
-        // LyricParser 返回「最后已开始的词」），此时不应点亮任何词——
-        // 用 Int.max 兜底会把整句瞬间铺满（行开始瞬间、首词未启动的窗口常见）
-        let sung = sungWord ?? -1
-        let rel = Int(positionMs) - line.startMs
+    }
+
+    /// 字符文本：已唱完 = 全亮；正在唱 = 字符内「左已读/右未读」两色硬切填充；未唱 = 继承底色
+    @ViewBuilder
+    private func unitText(_ u: CharUnit) -> some View {
+        if isCurrent {
+            let rel = Int(positionMs) - line.startMs
+            let end = u.startMs + u.durMs
+            if rel >= end {
+                Text(String(u.ch)).foregroundStyle(.primary)
+            } else if rel >= u.startMs, u.durMs > 0 {
+                // 字符内进度：用 mask 按宽度裁剪，避免 LinearGradient 的插值过渡带
+                // （primary→secondary 相邻色标会渲染出可见的第三种混合色）
+                let p = min(0.999, max(0, Double(rel - u.startMs) / Double(u.durMs)))
+                Text(String(u.ch))  // 基座：未读色（继承环境 .secondary）
+                    .overlay {
+                        Text(String(u.ch))
+                            .foregroundStyle(.primary)  // 已读色，仅左侧 p 部分可见
+                            .mask(alignment: .leading) {
+                                GeometryReader { geo in
+                                    Rectangle()
+                                        .frame(width: geo.size.width * CGFloat(p))
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                }
+                            }
+                    }
+            } else {
+                Text(String(u.ch))
+            }
+        }
+    }
+
+    /// 展开 words → 字符序列（词间空格：CJK 相邻不加空格，与 Rust join_words 一致）
+    private var charUnits: [CharUnit] {
+        var out: [CharUnit] = []
         for (wi, w) in line.words.enumerated() {
             if wi > 0 {
                 let prevLast = line.words[wi - 1].text.last ?? " "
                 let curFirst = w.text.first ?? " "
                 let bothCJK = (prevLast.unicodeScalars.first?.properties.isIdeographic ?? false)
                     && (curFirst.unicodeScalars.first?.properties.isIdeographic ?? false)
-                if !bothCJK { out += AttributedString(" ") }
+                if !bothCJK { out.append(CharUnit(ch: " ", startMs: w.offsetMs, durMs: 0)) }
             }
-            if isCurrent && wi <= sung {
-                let chars = Array(w.text)
-                // 正在唱的词：词内按时间进度逐字点亮，字与字之间带淡入过渡
-                // （硬切会在 30fps 下显得生硬；淡入让逐字推进连续流动）
-                let wordActive = rel >= w.offsetMs && rel < w.offsetMs + w.durMs
-                if wordActive && chars.count > 1 {
-                    let wordProgress = Double(rel - w.offsetMs) / Double(max(1, w.durMs))
-                    let charCount = Double(chars.count)
-                    for (ci, ch) in chars.enumerated() {
-                        let charStart = Double(ci) / charCount      // 字起点（词内比例）
-                        let charEnd = Double(ci + 1) / charCount    // 字终点
-                        // 淡入窗口：字周期的一小段（约 40~100ms），字到点前就开始渐亮
-                        let fade = max(0.04, min(0.10, (charEnd - charStart) * 0.4))
-                        let t = (wordProgress - (charStart - fade)) / fade
-                        var a = AttributedString(String(ch))
-                        if wordProgress >= charEnd {
-                            a.foregroundColor = .primary              // 已唱完的字：稳定高亮
-                        } else if t > 0 {
-                            a.foregroundColor = .primary.opacity(min(1, t))  // 正在淡入
-                        }
-                        out += a
-                    }
-                } else {
-                    var a = AttributedString(w.text)
-                    a.foregroundColor = .primary
-                    out += a
-                }
-            } else {
-                out += AttributedString(w.text)
+            let chars = Array(w.text)
+            let per = max(1, w.durMs / max(1, chars.count))
+            for (ci, ch) in chars.enumerated() {
+                out.append(CharUnit(ch: ch, startMs: w.offsetMs + ci * per, durMs: per))
             }
         }
         return out
+    }
+}
+
+/// 字符流布局：按可用宽度自动换行（行为居中），每个子视图为一个字符
+struct CharFlowLayout: Layout {
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+        let width = proposal.width ?? 312
+        var x: CGFloat = 0
+        var y: CGFloat = 0
+        var rowH: CGFloat = 0
+        for sv in subviews {
+            let s = sv.sizeThatFits(.unspecified)
+            if x + s.width > width, x > 0 {
+                x = 0
+                y += rowH
+                rowH = 0
+            }
+            x += s.width
+            rowH = max(rowH, s.height)
+        }
+        return CGSize(width: width, height: y + rowH)
+    }
+
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+        let width = bounds.width
+        // 第一遍：分行（子索引 + 宽度）
+        var rows: [[(idx: Int, w: CGFloat)]] = []
+        var cur: [(idx: Int, w: CGFloat)] = []
+        var x: CGFloat = 0
+        for (i, sv) in subviews.enumerated() {
+            let s = sv.sizeThatFits(.unspecified)
+            if x + s.width > width, !cur.isEmpty {
+                rows.append(cur)
+                cur = []
+                x = 0
+            }
+            cur.append((i, s.width))
+            x += s.width
+        }
+        if !cur.isEmpty { rows.append(cur) }
+        // 第二遍：行居中放置
+        var y = bounds.minY
+        for row in rows {
+            let rowW = row.reduce(0) { $0 + $1.w }
+            var xx = bounds.minX + max(0, (width - rowW) / 2)
+            var rowH: CGFloat = 0
+            for (i, w) in row {
+                let s = subviews[i].sizeThatFits(.unspecified)
+                subviews[i].place(at: CGPoint(x: xx, y: y), proposal: ProposedViewSize(s))
+                xx += w
+                rowH = max(rowH, s.height)
+            }
+            y += rowH
+        }
     }
 }
