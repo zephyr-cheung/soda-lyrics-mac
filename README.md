@@ -108,9 +108,26 @@ MediaRemote dict（14 keys，含 CurrentPlaybackDate）
 | 运行时 | 来源 | 分发风险 |
 |---|---|---|
 | Swift UI / Rust core | 本项目编译产物 | ✅ 无 |
-| `/usr/bin/python3` | Xcode CommandLineTools | ⚠️ 新 Mac 未装 CLT 时不存在 |
-| `/usr/bin/perl` | macOS 出厂自带 | ✅（备用代理方案，core spawn 场景待解） |
-| `resources/libmr_full.dylib` | 本项目源码编译 + ad-hoc 签名 | ✅ 随包分发 |
+| python 解释器 | 查找顺序：`SODA_PYTHON` → Homebrew `python3`（/opt/homebrew 或 /usr/local）→ `/usr/bin/python3` | ⚠️ 系统自带依赖 CommandLineTools；brew 安装则由 formula 声明 `python@3.12` 并注入 |
+| `resources/libmr_full.dylib` | 本项目源码编译 + ad-hoc 签名 | ✅ 随包分发（安装时重签） |
+| 网络（歌词搜索） | volcengine 公开接口 | ✅ 直连上游 |
+
+## 分发（Homebrew）
+
+brew tap 仓库：<https://github.com/zephyr-cheung/homebrew-tap>（`Formula/soda-lyrics.rb` 见本仓库 `scripts/Formula/`，tag 发版后更新 sha256）
+
+```bash
+brew tap zephyr-cheung/homebrew-tap
+brew install zephyr-cheung/tap/soda-lyrics   # 自动先装依赖：rust / swift / python@3.12
+
+# 开机自启（登录启动，崩溃自动拉起）
+brew services start soda-lyrics
+brew services info soda-lyrics                # 查看状态
+```
+
+安装布局：`<prefix>/bin/soda-lyrics`（入口）+ `<prefix>/libexec/soda-core` + `libexec/libmr_full.dylib`；Swift/code 侧全部相对定位（`../libexec`、同目录），不依赖绝对路径；service 通过 `SODA_PYTHON` 注入 brew python 解释器。
+
+发版流程：`git tag vX.Y.Z && git push --tags` → 计算 tarball sha256 → 更新 formula（可与 tap 仓库分开发版）。
 
 ## 调试
 
