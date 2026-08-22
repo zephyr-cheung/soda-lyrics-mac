@@ -57,23 +57,31 @@ macOS 状态栏歌词助手：**汽水音乐 + Apple Music** 双平台适配—�
 
 ```
 soda-lyrics-mac/
-├── Cargo.toml            # Rust core 构建配置（依赖：reqwest/serde/serde_json/anyhow/libc）
+├── Cargo.toml            # Rust core 构建配置（reqwest/serde/serde_json/anyhow/libc + strsim/zhhz/base64）
 ├── src/
-│   ├── main.rs           # 主循环：白名单过滤 → 状态合并 → JSONL 输出（快照 100ms + 换歌全量歌词）
-│   ├── media.rs          # 采集器：spawn python 代理、解析行、真实进度合成
-│   ├── api.rs            # 官方接口：volcengine 搜索（limit=20 + 时长匹配过滤）+ h5_seo_track 词级歌词
+│   ├── main.rs           # 主循环：播放器白名单路由 → 状态合并 → JSONL 输出（快照 100ms + 换歌全量歌词）
+│   ├── media.rs          # 采集器：spawn python 代理、adamID 路由、进度合成（elC → elapsed+ts 外推 → 自推进）
+│   ├── api.rs            # 汽水歌词：volcengine 搜索（limit=20 + 时长匹配过滤）+ h5_seo_track 词级歌词
+│   ├── api_apple.rs      # Apple 引擎入口：并发多源 → 打分排序 → 解析选优 + iTunes Search 候选
+│   ├── providers.rs      # 9 源并发层（LRCLIB/Kugou/QQ/网易/Kuwo/AMLL/Migu/Musixmatch/volcengine）
+│   ├── lyrics_match.rs   # 匹配引擎：加权打分 + Levenshtein + 繁简归一 + Smart 排序
+│   ├── lyrics_parse.rs   # 统一解析：YRC / QRC / Enhanced / volcengine 词级 / TTML / LRC
 │   ├── lyrics.rs         # 词级歌词解析器（全角逗号归一化、词间空格规则、句级+词级）
-│   └── store.rs          # 采集线程 / 歌词加载线程（mpsc 通信）
+│   └── store.rs          # 采集线程 / 歌词加载线程（Provider 分派，汽水流程独立）
 ├── swift-ui/
 │   ├── Package.swift     # SwiftPM（macOS 13+）
 │   └── Sources/
 │       ├── SodaLyrics/           # 库：Models.swift（数据结构）、PipelineStore.swift（spawn core + 管道解析）
 │       └── soda-lyrics/          # 可执行：SodaLyricsApp.swift（AppDelegate 自绘）、LyricsPanel.swift（面板）
 ├── resources/
-│   ├── libmr_full.m      # ★ 自写 ObjC 插件源码（取系统 MediaRemote dict + 算真实进度）
+│   ├── libmr_full.m      # ★ 自写 ObjC 插件源码（MediaRemote dict + ElapsedTime/Timestamp/adamID 输出）
 │   └── libmr_full.dylib  # 编译产物（ad-hoc 签名）
+├── docs/
+│   ├── panel.png         # 面板截图
+│   └── apple-music-api-research.md  # Apple Music 接口调研报告
 └── scripts/
-    └── build-plugin.sh   # 一键重建插件（clang 编译 + 签名）
+    ├── build-plugin.sh   # 一键重建插件（clang 编译 + 签名）
+    └── Formula/soda-lyrics.rb   # Homebrew formula 模板（依赖 rust/swift；运行期用系统 python）
 ```
 
 ## 构建与运行
@@ -97,10 +105,13 @@ swift-ui/.build/release/soda-lyrics
 ## 数据流
 
 ```
-MediaRemote dict（14 keys，含 CurrentPlaybackDate）
+MediaRemote dict（含 CurrentPlaybackDate / ElapsedTime / Timestamp / iTunesStoreIdentifier）
   → libmr_full.dylib（dlopen 私有框架，一次初始化）
-  → python 代理（ctypes，200ms 循环）→ JSONL: {title,artist,dur,rate,elC}
-  → Rust core：白名单过滤 → 换歌检测（含位置回退切歌辅助）→ 歌词加载（官方接口）
+  → python 代理（ctypes，200ms 循环）→ JSONL: {title,artist,dur,rate,elC,elapsed,ts,adamID}
+  → Rust core：换歌检测（含位置回退切歌辅助）→ 播放器路由（adamID > 0 → Apple；否则汽水）
+      ├─ 汽水：volcengine 搜索 → 时长过滤 → 词级歌词（原有链路）
+      └─ Apple：9 源并发搜索 → 加权打分（Levenshtein + 繁简 + 时长差）→ Smart 排序
+                  → 词级优先解析（YRC/QRC/TTML/Enhanced/LRC）
   → 快照 JSONL: {t:"snap", title, artist, pos, dur, playing, track}
     + 换歌时 {t:"lyrics", lines: [{s,e,t,w:[{o,d,t}]}], cover}
     + 候选 {t:"candidates", items:[{id,title,artist,dur,cover}]}
@@ -112,23 +123,29 @@ MediaRemote dict（14 keys，含 CurrentPlaybackDate）
 ### MediaRemote 访问的限制与代理
 
 实测结论（macOS 27）：
-- 汽水音乐（Electron）**不上报 elapsed**（`kMRMediaRemoteNowPlayingInfoElapsedTime` 恒 0）
-- 但系统 dict 提供 **`kMRMediaRemoteNowPlayingInfoCurrentPlaybackDate`**（该曲播放起点时刻）
-- **真实进度 = 当前墙钟 − CurrentPlaybackDate**
 - MediaRemote 的 now-playing 数据**只对解释器类进程返回**（perl/python 可以；Rust/ObjC CLI 一律 null——全矩阵验证过），因此采集必须经由解释器代理进程
+- **源校验**：仅 **Apple 签名**的解释器返回数据——`/usr/bin/python3` ✓，Homebrew 的 python（无签名）实测一律 null；`SODA_PYTHON` 勿指向 brew python
+- **播放器路由**：now-playing dict **不含 bundle id**；用 `kMRMediaRemoteNowPlayingInfoiTunesStoreIdentifier`（adam id）> 0 判定 Apple 系（汽水/第三方恒 0）
+- **进度**：
+  - 汽水（Electron）不上报 elapsed，但提供 `CurrentPlaybackDate` → `真实进度 = 当前墙钟 − CurrentPlaybackDate`
+  - Apple Music 无 cpd，但提供 `ElapsedTime`（快照）+ `Timestamp`（快照时刻）→ `真实进度 = elapsed + (now − ts) × rate`（无漂移）
 
 ### 为什么不用 mediaremote-rs
 
-`qishui-api` 作者推荐的 `mediaremote-rs` 适配器能拿到 title/dur，但**不输出 CurrentPlaybackDate**（进度拿不到），故自写 `libmr_full.m` 替代。
+`qishui-api` 作者推荐的 `mediaremote-rs` 适配器能拿到 title/dur，但**不输出 CurrentPlaybackDate**（进度拿不到），故自写 `libmr_full.m` 替代——插件直接输出 dict 全要素（含 ElapsedTime/Timestamp/adamID），苹果签名 python 走解释器代理即可完整采集。
+
+### Apple 歌词引擎（多源并发 + 打分匹配）
+
+移植自 [Lyrics-Plus](https://github.com/afeibukaixin/Lyrics-Plus)（MIT）：播放时 **LRCLIB / Kugou / QQ / 网易 / Kuwo / AMLL / Migu / Musixmatch / volcengine** 九源并发搜索（8s 超时），候选按 **title/artist/album/duration 加权打分**（`normalized_levenshtein` + 繁简归一 + title 过滤），**Smart 排序**（分数优先，同分带内按源顺序），随后按 **词级优先**（YRC/QRC/TTML/Enhanced LRC）依次解析；AMLL 支持 adamID 直查（Apple 官方同款逐词时间戳）。
 
 ## 依赖清单（分发视角）
 
-| 运行时 | 来源 | 分发风险 |
+| 依赖 | 来源 | 分发风险 |
 |---|---|---|
-| Swift UI / Rust core | 本项目编译产物 | ✅ 无 |
-| python 解释器 | `/usr/bin/python3`（**Apple 签名**——MediaRemote 对客户端有来源校验，仅 Apple 签名解释器返回数据；brew python 实测 null，勿用） | ✅ 依赖 CommandLineTools（brew 前置必有）；查找顺序：`SODA_PYTHON` → `/usr/bin/python3` → brew python 兜底 |
+| Swift UI / Rust core | 本项目编译产物（Rust 依赖 reqwest/serde/strsim/zhhz/base64 等**全部静态编译进二进制**） | ✅ 运行时零第三方库 |
+| python 解释器（仅运行期） | `/usr/bin/python3`（**Apple 签名**——MediaRemote 对客户端有来源校验，仅 Apple 签名解释器返回数据；brew python 实测 null，勿用） | ✅ 依赖 CommandLineTools（brew 前置必有）；查找顺序：`SODA_PYTHON`（慎用）→ `/usr/bin/python3` → brew python 兜底 |
 | `resources/libmr_full.dylib` | 本项目源码编译 + ad-hoc 签名 | ✅ 随包分发（安装时重签） |
-| 网络（歌词搜索） | volcengine 公开接口 | ✅ 直连上游 |
+| 网络（歌词搜索） | 多源公开接口：volcengine / iTunes Search / LRCLIB / Kugou / QQ / 网易 / Kuwo / AMLL / Migu / Musixmatch | ✅ 全部免登录（Musixmatch 匿名 token 自动获取） |
 
 ## 分发（Homebrew）
 
@@ -136,16 +153,16 @@ brew tap 仓库：<https://github.com/zephyr-cheung/homebrew-tap>（`Formula/sod
 
 ```bash
 brew tap zephyr-cheung/homebrew-tap
-brew install zephyr-cheung/tap/soda-lyrics   # 自动先装依赖：rust / swift / python@3.12
+brew install zephyr-cheung/tap/soda-lyrics   # 自动先装构建依赖：rust / swift
 
 # 开机自启（登录启动，崩溃自动拉起）
 brew services start soda-lyrics
 brew services info soda-lyrics                # 查看状态
 ```
 
-安装布局：`<prefix>/bin/soda-lyrics`（入口）+ `<prefix>/libexec/soda-core` + `libexec/libmr_full.dylib`；Swift/code 侧全部相对定位（`../libexec`、同目录），不依赖绝对路径；service 通过 `SODA_PYTHON` 注入 brew python 解释器。
+安装布局：`<prefix>/bin/soda-lyrics`（入口）+ `<prefix>/libexec/soda-core` + `libexec/libmr_full.dylib`；Swift/code 侧全部相对定位（`../libexec`、同目录），不依赖绝对路径；采集运行期使用 **Apple 签名的系统 `/usr/bin/python3`**（service 不注入任何 python 路径，brew python 会拿到 null）。
 
-发版流程：`git tag vX.Y.Z && git push --tags` → 计算 tarball sha256 → 更新 formula（可与 tap 仓库分开发版）。
+发版流程：`git tag vX.Y.Z && git push --tags` → 计算官方 tarball sha256 → 更新 `scripts/Formula/soda-lyrics.rb` → 同步到 tap 仓库 `zephyr-cheung/homebrew-tap`。
 
 ## 调试
 
