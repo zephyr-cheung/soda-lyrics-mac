@@ -117,8 +117,16 @@ pub fn current_line_index(lines: &[LyricLine], pos_ms: i64) -> Option<usize> {
     if hi == usize::MAX { None } else { Some(hi) }
 }
 
-/// 当前词下标（卡拉OK）
+/// 当前词下标（卡拉OK）：词与词之间的间隙保持「最后一个已开始的词」，
+/// 与 Swift 侧 LyricParser.currentWordIndex 语义一致（避免间隙跳空/整句铺满）
 pub fn current_word_index(line: &LyricLine, pos_ms: i64) -> Option<usize> {
     let rel = pos_ms - line.start_ms;
-    line.words.iter().position(|w| rel >= w.offset_ms && rel < w.offset_ms + w.dur_ms)
+    let mut last = None;
+    for (idx, w) in line.words.iter().enumerate() {
+        if rel >= w.offset_ms {
+            last = Some(idx);
+            if rel < w.offset_ms + w.dur_ms { return Some(idx) }
+        }
+    }
+    last
 }

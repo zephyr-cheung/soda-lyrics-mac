@@ -68,10 +68,10 @@ bash scripts/build-plugin.sh
 cargo build --release        # 产物 target/release/soda-lyrics
 
 # 3) 构建 Swift UI
-cd swift-ui && swift build   # 产物 .build/debug/soda-lyrics
+cd swift-ui && swift build -c release   # 产物 .build/release/soda-lyrics（release 跑马灯位图方案 CPU ~1%）
 
 # 4) 运行（UI 自动拉起 core + python 代理）
-swift-ui/.build/debug/soda-lyrics
+swift-ui/.build/release/soda-lyrics
 ```
 
 运行后出现 3 个进程：Swift UI、Rust core、python 代理。
@@ -82,9 +82,10 @@ swift-ui/.build/debug/soda-lyrics
 MediaRemote dict（14 keys，含 CurrentPlaybackDate）
   → libmr_full.dylib（dlopen 私有框架，一次初始化）
   → python 代理（ctypes，200ms 循环）→ JSONL: {title,artist,dur,rate,elC}
-  → Rust core：白名单过滤 → 换歌检测 → 歌词加载（官方接口）
-  → 快照 JSONL: {t:"snap", title, artist, pos, dur, playing}
-    + 换歌时 {t:"lyrics", lines: [{s,e,t,w:[{o,d,t}]}]}
+  → Rust core：白名单过滤 → 换歌检测（含位置回退切歌辅助）→ 歌词加载（官方接口）
+  → 快照 JSONL: {t:"snap", title, artist, pos, dur, playing, track}
+    + 换歌时 {t:"lyrics", lines: [{s,e,t,w:[{o,d,t}]}], cover}
+    + 候选 {t:"candidates", items:[{id,title,artist,dur,cover}]}
   → Swift PipelineStore 解析 → @Published → 菜单栏跑马灯 + 面板
 ```
 

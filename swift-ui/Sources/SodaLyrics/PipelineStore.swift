@@ -16,6 +16,8 @@ public final class NowPlayingStore: ObservableObject {
     @Published public var candidates: [LyricCandidate] = []
     /// 当前歌词来自哪个候选（core 在 lyrics 消息中回带）
     @Published public var selectedTrackId: String?
+    /// 当前曲目封面图 URL（歌词采用曲目的封面；candidates 预载兜底）
+    @Published public var coverURL: String?
 
     private var proc: Process?
     private var stdinPipe: Pipe?
@@ -34,13 +36,14 @@ public final class NowPlayingStore: ObservableObject {
 
     public var currentIndex: Int? { LyricParser.currentLineIndex(lines, positionMs: displayPositionMs) }
 
-    /// 菜单栏显示文本：当前歌词行优先，其次歌名
+    /// 菜单栏显示文本：当前歌词行优先，其次加载态提示，其次歌名
     public var barText: String {
         if let idx = currentIndex, idx < lines.count { return lines[idx].text }
+        // 切歌/启动的歌词获取期：明确显示加载过渡，避免「上一首第一句」残留观感
+        if status == .loading { return "加载歌词…" }
         if !now.title.isEmpty { return now.title }
         switch status {
         case .appMissing: return "汽水音乐未运行"
-        case .loading: return "加载歌词…"
         case .noResult, .error: return "未找到歌词"
         default: return "汽水歌词"
         }
@@ -179,10 +182,14 @@ public final class NowPlayingStore: ObservableObject {
             let pos = obj["pos"] as? Double ?? 0
             let dur = obj["dur"] as? Double ?? 0
             let playing = obj["playing"] as? Bool ?? false
-            if title != lastTitle, !title.isEmpty {
+            // core 侧位置回退检测到的切歌（此时 title 可能还是旧歌，MediaRemote 滞后）：
+            // 立即清空歌词进加载态，避免旧歌词残留到新歌词就绪
+            let trackEvent = (obj["track"] as? Bool) ?? false
+            if trackEvent || (!title.isEmpty && title != lastTitle) {
                 lastTitle = title
                 lines = []
                 lyricCredit = ""
+                coverURL = nil
                 status = .loading
             }
             lastPos = pos
@@ -202,11 +209,16 @@ public final class NowPlayingStore: ObservableObject {
                         id: it["id"] as? String ?? "",
                         title: it["title"] as? String ?? "",
                         artist: it["artist"] as? String ?? "",
-                        durationMs: Int(it["dur"] as? Double ?? 0)
+                        durationMs: Int(it["dur"] as? Double ?? 0),
+                        coverUrl: it["cover"] as? String ?? ""
                     ))
                 }
             }
             candidates = cands
+            // 歌词仍未确定时先用第一个候选的封面预载（lyrics 消息到达后以采用曲目为准）
+            if coverURL == nil, let first = cands.first(where: { !$0.coverUrl.isEmpty }) {
+                coverURL = first.coverUrl
+            }
             Self.log("candidates applied: \(cands.count)")
         case "lyrics":
             let credit = obj["credit"] as? String ?? ""
@@ -214,6 +226,9 @@ public final class NowPlayingStore: ObservableObject {
                 selectedTrackId = tid
             }
             let fail = obj["fail"] as? String ?? "none"
+            if let c = obj["cover"] as? String, !c.isEmpty {
+                coverURL = c
+            }
             var parsed: [LyricLine] = []
             if let arr = obj["lines"] as? [[String: Any]] {
                 for it in arr {

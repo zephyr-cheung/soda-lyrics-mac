@@ -2,7 +2,7 @@ import AppKit
 import SwiftUI
 import SodaLyrics
 
-/// 自绘 NSStatusItem 菜单栏：跑马灯由 0.1s 原生 Timer 驱动（避免 TimelineView 饿死 runloop）
+/// 自绘 NSStatusItem 菜单栏：位图缓存 + CALayer contentsRect 平移（60fps 跑马，零逐帧重绘）
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
@@ -12,26 +12,48 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var marqueeOffset: CGFloat = 0
     private var lastText = ""
     private var textWidth: CGFloat = 0
+    /// 换句时渲染一次的位图（滚动文本=span 宽含间隙；短文本=maxWidth 宽居中）
+    private var cachedBitmap: NSImage?
+    private var bitmapSpan: CGFloat = 1
 
     private let maxWidth: CGFloat = 260
     private let height: CGFloat = 20
-    private let step: CGFloat = 3    // 每帧 3pt → 30pt/s
+    private let defaultSpeed: CGFloat = 30    // 默认跑马速度 pt/s（句末/间隙）
+    private let minSpeed: CGFloat = 12        // 防超长句停滞
+    private let maxSpeed: CGFloat = 240       // 防超短句飞滚
+    private let dt: CGFloat = 1.0 / 60.0      // 60fps 跑马（contentsRect 平移，成本极低）
+    /// 面板 30fps 刷新节流：仅 popover 可见时发 pulse（LayoutGraph 重算有真实成本，
+    /// 面板关闭时驱动 SwiftUI 布局会白烧 CPU）
+    private var pulseTick = 0
+    /// 当前句的恒定跑马速度（pt/s，换句时按行总时长重算）
+    private var marqueeStepPerSec: CGFloat = 30
+    private let font = NSFont.menuBarFont(ofSize: 13)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         store.start()
 
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
+        // 固定长度 = 跑马视窗宽：layer 方案不再设置 button.image，
+        // variableLength 无内容时宽度会塌缩成不可见的空白
+        statusItem = NSStatusBar.system.statusItem(withLength: 260)
         statusItem.button?.target = self
         statusItem.button?.action = #selector(togglePopover)
+        // layer 化：滚动走 contentsRect（GPU），不再每帧重绘位图
+        statusItem.button?.wantsLayer = true
+        statusItem.button?.layer?.contentsGravity = .resize
 
         popover = NSPopover()
         popover.contentSize = NSSize(width: 360, height: 440)
         popover.contentViewController = NSHostingController(rootView: LyricsPanel(store: store))
         popover.behavior = .transient
 
-        let t = Timer(timeInterval: 0.1, repeats: true) { [weak self] _ in
+        let t = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
             guard let self else { return }
-            Task { @MainActor in self.redraw() }
+            MainActor.assumeIsolated {
+                // 面板 30fps：只在 popover 显示时驱动（关闭时零开销）
+                self.pulseTick += 1
+                if self.pulseTick % 2 == 0, self.popover.isShown { self.store.pulse() }
+                self.redraw()
+            }
         }
         RunLoop.main.add(t, forMode: .common)
         drawTimer = t
@@ -41,33 +63,61 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func redraw() {
         let text = store.barText
-        let font = NSFont.menuBarFont(ofSize: 13)
         let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.labelColor]
-        let w = (text as NSString).size(withAttributes: attrs).width
 
         if text != lastText {
             lastText = text
-            textWidth = w
+            textWidth = (text as NSString).size(withAttributes: attrs).width
             marqueeOffset = 0
+            marqueeStepPerSec = defaultSpeed
+            if textWidth > maxWidth {
+                let span = textWidth + 80
+                // 换句时按「整圈行程 / 行总时长」固定圈速：整句匀速滚完一圈，句内不变速
+                if let idx = store.currentIndex, idx < store.lines.count {
+                    let line = store.lines[idx]
+                    let durSec = CGFloat(max(0.8, Double(line.endMs - line.startMs))) / 1000
+                    marqueeStepPerSec = min(max(span / durSec, minSpeed), maxSpeed)
+                }
+            }
+            // 一次性渲染整幅位图。滚动文本：左右各留 maxWidth 空白（contentsRect 全程合法，
+            // 避免视窗越界导致的闪烁）；短文本：maxWidth 宽居中
+            let pad = textWidth > maxWidth ? maxWidth : 0
+            let bitmapW = textWidth > maxWidth ? textWidth + 80 + pad * 2 : maxWidth
+            bitmapSpan = bitmapW
+            let attrStr = NSAttributedString(string: text, attributes: attrs)
+            let s = attrStr.size()
+            let img = NSImage(size: NSSize(width: bitmapW, height: height))
+            img.lockFocus()
+            let drawX = (textWidth > maxWidth) ? pad + (maxWidth - s.width) / 2 : (bitmapW - s.width) / 2
+            attrStr.draw(with: NSRect(x: drawX, y: (height - s.height) / 2, width: s.width, height: s.height), options: [.usesLineFragmentOrigin])
+            img.unlockFocus()
+            cachedBitmap = img
+            statusItem.button?.layer?.contents = img
         }
 
-        var x: CGFloat = 0
+        guard let layer = statusItem.button?.layer else { return }
+        // 防御：系统可能重置 button 的 layer 内容，每帧确保位图在位（identity 比较）
+        if let cur = layer.contents as? NSImage, let cached = cachedBitmap, cur === cached {
+            // 在位
+        } else {
+            layer.contents = cachedBitmap
+        }
         if textWidth > maxWidth {
             let span = textWidth + 80
-            marqueeOffset += step
-            if marqueeOffset > span { marqueeOffset = 0 }
-            x = maxWidth - marqueeOffset
+            marqueeOffset += marqueeStepPerSec * dt
+            if marqueeOffset > span {
+                // 滚完一圈：停在尾部等换行，不再归零重滚本句。
+                // 归零会让视窗从「句尾」瞬间跳回「句首」，而 currentIndex 依赖 100ms 快照
+                // 可能还没切到下一句——造成「本句闪回开头、停 0.1s 才换句」的不连贯观感。
+                // 换行（text 变化）时位图重建 + offset 归零，新句自然从头滑入。
+                marqueeOffset = span
+            }
+            // 视窗 = 位图 [offset, offset + maxWidth]，恒在 [0, totalW] 内；offset=0 时视窗落在
+            // 左侧空白区（与原「初始全空、文本右缘滑入」视觉一致）
+            layer.contentsRect = CGRect(x: marqueeOffset / bitmapSpan, y: 0, width: maxWidth / bitmapSpan, height: 1)
         } else {
-            x = (maxWidth - textWidth) / 2
+            layer.contentsRect = CGRect(x: 0, y: 0, width: 1, height: 1)
         }
-
-        let img = NSImage(size: NSSize(width: maxWidth, height: height))
-        img.lockFocus()
-        (text as NSString).draw(at: NSPoint(x: x, y: (height - font.ascender - font.descender) / 2), withAttributes: attrs)
-        img.unlockFocus()
-
-        statusItem.button?.image = img
-        statusItem.button?.imagePosition = .imageOnly
         statusItem.button?.toolTip = text
     }
 

@@ -37,6 +37,8 @@ pub struct LyricsPayload {
     pub fail: FailKind,
     /// 实际采用的 track id（UI 高亮当前歌词源）
     pub track_id: String,
+    /// 实际采用曲目的封面图 URL（UI 面板左侧展示）
+    pub cover_url: String,
     /// 自动搜索流程的候选列表（UI 手动切换数据源）；手动指定时为空
     pub candidates: Vec<crate::api::Track>,
 }
@@ -99,6 +101,7 @@ fn load_lyrics(req: &LoadRequest) -> LyricsPayload {
     if let Some(m) = &req.manual {
         payload.track_id = m.id.clone();
         payload.credit = format!("{} · {}", m.title, m.artist);
+        payload.cover_url = m.cover_url.clone();
         return match api::fetch_lyrics(&m.id) {
             Ok(lines) => {
                 let got = !lines.is_empty();
@@ -154,6 +157,7 @@ fn load_lyrics(req: &LoadRequest) -> LyricsPayload {
                         payload.lines = lines;
                         payload.credit = format!("{} · {}", t.title, t.artist);
                         payload.track_id = t.id.clone();
+                        payload.cover_url = t.cover_url.clone();
                         payload.ok = true;
                         payload.fail = FailKind::None;
                         log(&format!("lyrics hit at #{} {} {}", tracks.iter().position(|x| x.id == t.id).unwrap_or(0) + 1, t.id, t.title));

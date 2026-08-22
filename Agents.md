@@ -5,15 +5,15 @@
 ## 项目现状
 
 - **阶段**：功能完成并可运行（Swift UI + Rust core + python 代理三进程协同）。
-- **当前运行**：`swift-ui/.build/debug/soda-lyrics` 启动（自动拉起 Rust core 与 python 代理）。
+- **当前运行**：`swift-ui/.build/release/soda-lyrics` 启动（自动拉起 Rust core 与 python 代理）。
 - **进度**：真实进度来自系统 MediaRemote 的 `CurrentPlaybackDate`（`elC = 墙钟 − CurrentPlaybackDate`），与播放器同步；非自推进。
 - **白名单**：只响应 `com.soda.music`；其他 App 播放自动清空状态。
 
 ## 架构（三进程）
 
 1. **Swift UI**（`swift-ui/`，SwiftPM + AppKit）
-   - `SodaLyricsApp.swift`：AppDelegate、NSStatusItem 自绘跑马灯（0.1s Timer 重绘，避开 SwiftUI TimelineView 饿死 runloop 的坑）
-   - `LyricsPanel.swift`：NSPopover 面板——歌名/歌手/进度条 + 歌词列表（当前行高亮、词级染色、自动滚动）
+   - `SodaLyricsApp.swift`：AppDelegate、NSStatusItem 自绘跑马灯（位图缓存 + CALayer contentsRect GPU 平移，60fps Timer；避开 SwiftUI TimelineView 饿死 runloop 的坑）。面板 30fps 刷新由本类按 popover 可见性节流驱动（关闭时零开销）
+   - `LyricsPanel.swift`：NSPopover 面板——封面/歌名/歌手/进度条 + 歌词列表（当前行高亮、词级染色带淡入、spring 自动滚动、候选切换）
    - `PipelineStore.swift`（库）：spawn Rust core，读 stdout JSONL 行 → @Published 状态
 2. **Rust core**（`src/`，`cargo build --release`）
    - `main.rs`：主循环——白名单过滤 → 状态合并 → 100ms 快照 JSONL；换歌时发全量歌词
@@ -28,9 +28,9 @@
 ## 通信协议（JSONL）
 
 **core → Swift（stdout）**
-- 快照：`{"t":"snap","title":...,"artist":...,"pos":...,"dur":...,"playing":...}`（100ms 一条）
-- 歌词：`{"t":"lyrics","title":...,"artist":...,"credit":...,"track_id":...,"fail":"none|noresult|error","lines":[...]}`（换歌/手动切换时一条；`fail` 区分无结果与接口错误）
-- 候选：`{"t":"candidates","title":...,"artist":...,"items":[{"id","title","artist","dur"}]}`（自动搜索完成后一条，已时长过滤）
+- 快照：`{"t":"snap","title":...,"artist":...,"pos":...,"dur":...,"playing":...,"track":false}`（100ms 一条；`track:true` = core 检测到「位置回退式切歌」（MediaRemote 元数据滞后时标题未变但位置回退到开头），Swift 须立即清空进加载态）
+- 歌词：`{"t":"lyrics","title":...,"artist":...,"credit":...,"track_id":...,"cover":...,"fail":"none|noresult|error","lines":[...]}`（换歌/手动切换时一条；`fail` 区分无结果与接口错误；`cover` 为采用曲目封面 URL 可空）
+- 候选：`{"t":"candidates","title":...,"artist":...,"items":[{"id","title","artist","dur","cover"}]}`（自动搜索完成后一条，已时长过滤）
 
 **Swift → core（stdin）**
 - `{"t":"pick","id":"..."}`：手动指定候选（同曲目内不再自动降级）
@@ -48,8 +48,11 @@
 ## 已知坑
 
 - Swift 端 `displayPos` 用 @Published（直接存快照 pos），不要二次叠加自推进（曾导致跳变）。
-- `LyricParser.currentLineIndex` 间隙保持上一句（不跳空）。
+- `LyricParser.currentLineIndex` 间隙保持上一句（不跳空）；`currentWordIndex` 词间隙保持「最后已开始的词」（返回 nil 会让 UI 用 Int.max 兜底导致整句瞬间铺满——已移除该兜底）。
 - 歌词接口偶发无结果（某些歌 0 行）：`status=.noResult` 显示「未找到歌词」。
+- 切歌加载态：core 用「位置回退 >20s 到开头」识别 MediaRemote 元数据滞后型切歌（title 未变但已换歌）；Swift 收到 `track:true` 立即清空，状态栏显示「加载歌词…」。
+- 面板 30fps 刷新只在 popover 可见时驱动（Store.pulse 由 AppDelegate 节流）；在 LyricsPanel 内挂 Timer 会让 popover 关闭时也重算 AttributeGraph（CPU 10%+）。
+- 跑马灯：滚完一圈停在尾部等换行（不要归零重滚，会「闪回句首」）；位图左右 pad=maxWidth 保证 contentsRect 恒在 [0,1]；固定 `withLength: 260`（variableLength 无 image 会塌缩）。
 - 父项目 `AGENTS.md` 提到的 `qishui-api` 本地服务与本项目无关（本项目直连上游）。
 
 ## 开发命令
@@ -57,8 +60,8 @@
 ```bash
 bash scripts/build-plugin.sh        # 重建采集插件（编译+签名）
 cargo build --release               # Rust core
-cd swift-ui && swift build          # Swift UI
-swift-ui/.build/debug/soda-lyrics   # 运行
+cd swift-ui && swift build -c release   # Swift UI（release；debug 位图方案 CPU 高）
+swift-ui/.build/release/soda-lyrics     # 运行
 tail -f /tmp/soda-lyrics-rust.log   # Rust 日志
 tail -f /tmp/soda-lyrics-swift.log  # Swift 日志
 ```

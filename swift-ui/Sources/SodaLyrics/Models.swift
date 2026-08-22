@@ -30,6 +30,8 @@ public struct LyricCandidate: Identifiable, Sendable {
     public let title: String
     public let artist: String
     public let durationMs: Int
+    /// 封面图 URL（可能为空）
+    public let coverUrl: String
 }
 
 public func formatClock(_ ms: Double) -> String {
@@ -50,12 +52,17 @@ public enum LyricParser {
         return hi >= 0 ? hi : nil
     }
 
-    /// 当前词下标（卡拉OK高亮）
+    /// 当前词下标（卡拉OK高亮）：词与词之间的间隙保持「最后一个已开始的词」，
+    /// 避免高亮瞬间跳空/瞬间铺满整句（词间隙返回 nil 会让上层把整句染亮）
     public static func currentWordIndex(_ line: LyricLine, positionMs: Double) -> Int? {
         let rel = Int(positionMs) - line.startMs
-        for (idx, w) in line.words.enumerated() where rel >= w.offsetMs && rel < w.offsetMs + w.durMs {
-            return idx
+        var last: Int?
+        for (idx, w) in line.words.enumerated() {
+            if rel >= w.offsetMs {
+                last = idx
+                if rel < w.offsetMs + w.durMs { return idx }
+            }
         }
-        return nil
+        return last
     }
 }

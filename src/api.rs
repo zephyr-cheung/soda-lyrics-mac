@@ -12,6 +12,8 @@ pub struct Track {
     pub title: String,
     pub artist: String,
     pub duration_ms: i64,
+    /// 封面图 URL（搜索接口返回；可能为空）
+    pub cover_url: String,
 }
 
 fn encode(s: &str) -> String {
@@ -44,8 +46,9 @@ pub fn search_tracks(keyword: &str) -> anyhow::Result<Vec<Track>> {
                 None => it.get("author").and_then(|x| x.as_str()).unwrap_or("").to_string(),
             };
             let dur = it.get("duration").and_then(|x| x.as_f64()).unwrap_or(0.0) as i64 * 1000;
+            let cover = it.get("cover_url").and_then(|x| x.as_str()).unwrap_or("").to_string();
             if !title.is_empty() {
-                out.push(Track { id: id.to_string(), title: title.to_string(), artist, duration_ms: dur });
+                out.push(Track { id: id.to_string(), title: title.to_string(), artist, duration_ms: dur, cover_url: cover });
             }
         }
     }

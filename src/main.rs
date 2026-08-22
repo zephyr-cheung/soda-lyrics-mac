@@ -45,13 +45,41 @@ fn main() {
     let mut current_candidates: Vec<api::Track> = Vec::new();
     // 手动指定的 track id（UI 切换后记录；换歌清空，重播同歌时沿用）
     let mut manual_id: Option<String> = None;
+    // 切歌辅助检测：MediaRemote 元数据滞后时（切歌瞬间仍报旧 title），用
+    // 「位置大幅回退到开头」识别切歌，提前清空并触发加载，避免旧歌词残留
+    let mut last_track_pos: Option<f64> = None;
 
     let mut out = std::io::stdout();
     loop {
         // 采集快照（三段式：汽水 / 查询失败保持现状 / 其他 App 清空）
+        // 本轮是否检测到「位置回退式切歌」（snap 消息带 track 标志通知 Swift 清空）
+        let mut track_event = false;
         while let Some(snap) = store::recv_timeout(&snap_rx, 0) {
             let app_id = snap.app_id.clone();
             if app_id == "com.soda.music" {
+                // 位置回退检测：标题未变但正在播放且位置回到开头（距上次 >20s 回退）
+                if !snap.title.is_empty() && snap.playing && snap.position_ms < 5000.0 {
+                    if let Some(prev) = last_track_pos {
+                        if prev - snap.position_ms > 20000.0 {
+                            if loaded_key == snap.title {
+                                store::log(&format!("track-change(rewind) -> {}", snap.title));
+                                lines.clear();
+                                manual_id = None;
+                                current_candidates.clear();
+                                loader_tx
+                                    .send(store::LoadRequest {
+                                        key: snap.title.clone(),
+                                        title: snap.title.clone(),
+                                        artist: snap.artist.clone(),
+                                        player_dur_ms: snap.duration_ms,
+                                        manual: None,
+                                    })
+                                    .ok();
+                                track_event = true;
+                            }
+                        }
+                    }
+                }
                 title = snap.title.clone();
                 artist = snap.artist.clone();
                 pos = snap.position_ms;
@@ -74,6 +102,7 @@ fn main() {
                         .ok();
                     store::log(&format!("track-change -> {}", snap.title));
                 }
+                last_track_pos = if snap.playing { Some(snap.position_ms) } else { None };
             } else if app_id.is_empty() {
                 // 查询失败 / 无数据：保持现状，避免误清空；Swift 侧自推进兜底
             } else {
@@ -150,7 +179,7 @@ fn main() {
                         if !payload.candidates.is_empty() {
                             current_candidates = payload.candidates.clone();
                             let items: Vec<serde_json::Value> = payload.candidates.iter()
-                                .map(|t| json!({"id": t.id, "title": t.title, "artist": t.artist, "dur": t.duration_ms}))
+                                .map(|t| json!({"id": t.id, "title": t.title, "artist": t.artist, "dur": t.duration_ms, "cover": t.cover_url}))
                                 .collect();
                             let cand_msg = json!({"t": "candidates", "title": title, "artist": artist, "items": items});
                             let _ = writeln!(out, "{}", serde_json::to_string(&cand_msg).unwrap_or_default());
@@ -179,6 +208,7 @@ fn main() {
                             "artist": artist,
                             "credit": payload.credit,
                             "track_id": payload.track_id,
+                            "cover": payload.cover_url,
                             "fail": fail,
                             "lines": lines_json,
                         });
@@ -200,6 +230,9 @@ fn main() {
             "pos": pos,
             "dur": dur,
             "playing": playing,
+            // 位置回退式切歌：Swift 收到后立即清空歌词进入加载态
+            // （否则它依赖 title 变化检测，MediaRemote 滞后期间会残留旧歌词）
+            "track": track_event,
         });
         let line = serde_json::to_string(&snap_msg).unwrap_or_default();
         let _ = writeln!(out, "{}", line);
