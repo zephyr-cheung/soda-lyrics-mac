@@ -1,6 +1,14 @@
 import Foundation
 import SwiftUI
 
+/// 面板帧级进度源：与 NowPlayingStore（歌词/曲目等低频数据）解耦——
+/// 只有订阅它的视图（当前行逐字、进度条）随 30fps 重算，歌词列表不失效
+@MainActor
+public final class ProgressTicker: ObservableObject {
+    @Published public var positionMs: Double = 0
+    public init() {}
+}
+
 /// 数据管道：spawn Rust core（soda-lyrics 二进制），读 JSONL 行驱动 UI
 @MainActor
 public final class NowPlayingStore: ObservableObject {
@@ -12,6 +20,8 @@ public final class NowPlayingStore: ObservableObject {
     @Published public var lines: [LyricLine] = []
     @Published public var lyricCredit = ""
     @Published public var status: Status = .idle
+    /// 当前行下标（snap 时计算，仅跨句变化时赋值——面板列表只在换行帧失效重算）
+    @Published public var currentIndex: Int?
     /// 歌词搜索候选（手动切换歌词源）
     @Published public var candidates: [LyricCandidate] = []
     /// 当前歌词来自哪个候选（core 在 lyrics 消息中回带）
@@ -33,8 +43,6 @@ public final class NowPlayingStore: ObservableObject {
 
     /// 实时进度：完全信任 Rust core 的 100ms 帧推进（避免二次叠加跳变）
     public var displayPositionMs: Double { displayPos }
-
-    public var currentIndex: Int? { LyricParser.currentLineIndex(lines, positionMs: displayPositionMs) }
 
     /// 菜单栏显示文本：当前歌词行优先，其次加载态提示，其次歌名
     public var barText: String {
@@ -194,6 +202,7 @@ public final class NowPlayingStore: ObservableObject {
                 lines = []
                 lyricCredit = ""
                 coverURL = nil
+                currentIndex = nil
                 status = .loading
             }
             lastPos = pos
@@ -202,6 +211,9 @@ public final class NowPlayingStore: ObservableObject {
             receivedAt = Date()
             displayPos = pos
             now = NowPlaying(title: title, artist: artist, positionMs: pos, durationMs: dur, isPlaying: playing)
+            // 当前行：仅跨句边界时赋值，避免 100ms 快照的每帧值变化 invalidate 面板列表
+            let ci = LyricParser.currentLineIndex(lines, positionMs: pos)
+            if ci != currentIndex { currentIndex = ci }
             if title.isEmpty { status = .idle }
         case "candidates":
             // 候选列表（自动搜索流程发）；title 与当前歌曲不一致视为过期丢弃
@@ -256,6 +268,7 @@ public final class NowPlayingStore: ObservableObject {
             lyricCredit = credit
             // fail 区分「没找到歌词」与「接口/网络错误」，UI 文案不同
             status = parsed.isEmpty ? (fail == "error" ? .error : .noResult) : .ok
+            currentIndex = LyricParser.currentLineIndex(lines, positionMs: displayPos)
             Self.log("lyrics applied: \(parsed.count) lines fail=\(fail)")
         default:
             break

@@ -8,6 +8,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var popover: NSPopover!
     private let store = NowPlayingStore()
+    /// 面板帧级进度（30fps）：只驱动当前行逐字与进度条，不触碰歌词列表
+    private let ticker = ProgressTicker()
     private var drawTimer: Timer?
     private var marqueeOffset: CGFloat = 0
     private var lastText = ""
@@ -22,9 +24,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private let minSpeed: CGFloat = 12        // 防超长句停滞
     private let maxSpeed: CGFloat = 240       // 防超短句飞滚
     private let dt: CGFloat = 1.0 / 60.0      // 60fps 跑马（contentsRect 平移，成本极低）
-    /// 面板 30fps 刷新节流：仅 popover 可见时发 pulse（LayoutGraph 重算有真实成本，
-    /// 面板关闭时驱动 SwiftUI 布局会白烧 CPU）
-    private var pulseTick = 0
+    /// 面板 25fps 刷新节流时间戳（LayoutGraph 重算有真实成本，仅 popover 可见时推进 ticker）
+    private var lastTickerAt: TimeInterval = 0
+    /// 状态栏 layer 视窗是否需要重设（静态短文本时每帧零层写）
+    private var layerDirty = false
     /// 当前句的恒定跑马速度（pt/s，换句时按行总时长重算）
     private var marqueeStepPerSec: CGFloat = 30
     private let font = NSFont.menuBarFont(ofSize: 13)
@@ -43,15 +46,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
         popover = NSPopover()
         popover.contentSize = NSSize(width: 360, height: 440)
-        popover.contentViewController = NSHostingController(rootView: LyricsPanel(store: store))
+        popover.contentViewController = NSHostingController(rootView: LyricsPanel(store: store, ticker: ticker))
         popover.behavior = .transient
 
         let t = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
             guard let self else { return }
             MainActor.assumeIsolated {
-                // 面板 30fps：只在 popover 显示时驱动（关闭时零开销）
-                self.pulseTick += 1
-                if self.pulseTick % 2 == 0, self.popover.isShown { self.store.pulse() }
                 self.redraw()
             }
         }
@@ -62,6 +62,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func redraw() {
+        let now = Date().timeIntervalSinceReferenceDate
+        // ticker 25fps 节流：仅 popover 可见时推进（歌词列表/面板主体依赖低频 store，不失效）
+        if now - lastTickerAt >= 0.04 {
+            lastTickerAt = now
+            if popover.isShown { ticker.positionMs = store.displayPos }
+        }
+
         let text = store.barText
         let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.labelColor]
 
@@ -92,16 +99,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             attrStr.draw(with: NSRect(x: drawX, y: (height - s.height) / 2, width: s.width, height: s.height), options: [.usesLineFragmentOrigin])
             img.unlockFocus()
             cachedBitmap = img
-            statusItem.button?.layer?.contents = img
+            if let layer = statusItem.button?.layer {
+                layer.contents = img
+            }
+            layerDirty = true   // 文本/位图变化 → 需重设视窗
         }
 
         guard let layer = statusItem.button?.layer else { return }
         // 防御：系统可能重置 button 的 layer 内容，每帧确保位图在位（identity 比较）
-        if let cur = layer.contents as? NSImage, let cached = cachedBitmap, cur === cached {
-            // 在位
-        } else {
-            layer.contents = cachedBitmap
+        if let cur = layer.contents as? NSImage, let cached = cachedBitmap, cur !== cached {
+            layer.contents = cached
+            layerDirty = true
         }
+        // 视窗更新：长文本滚动每帧；短文本仅位图/文本变化帧（静态关闭态零每帧层写）
         if textWidth > maxWidth {
             let span = textWidth + 80
             marqueeOffset += marqueeStepPerSec * dt
@@ -115,8 +125,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             // 视窗 = 位图 [offset, offset + maxWidth]，恒在 [0, totalW] 内；offset=0 时视窗落在
             // 左侧空白区（与原「初始全空、文本右缘滑入」视觉一致）
             layer.contentsRect = CGRect(x: marqueeOffset / bitmapSpan, y: 0, width: maxWidth / bitmapSpan, height: 1)
-        } else {
+            layerDirty = false
+        } else if layerDirty {
             layer.contentsRect = CGRect(x: 0, y: 0, width: 1, height: 1)
+            layerDirty = false
         }
         statusItem.button?.toolTip = text
     }

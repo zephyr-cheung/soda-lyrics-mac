@@ -1,8 +1,39 @@
 import SwiftUI
+import AppKit
 import SodaLyrics
+
+/// 歌词字符单元（词内均分词时长；含词间空格）
+private struct CharUnit {
+    let ch: Character
+    let startMs: Int
+    let durMs: Int
+}
+
+/// 展开 words → 字符序列（词间空格：CJK 相邻不加空格，与 Rust join_words 一致）
+private func buildCharUnits(_ line: LyricLine) -> [CharUnit] {
+    var out: [CharUnit] = []
+    for (wi, w) in line.words.enumerated() {
+        if wi > 0 {
+            let prevLast = line.words[wi - 1].text.last ?? " "
+            let curFirst = w.text.first ?? " "
+            let bothCJK = (prevLast.unicodeScalars.first?.properties.isIdeographic ?? false)
+                && (curFirst.unicodeScalars.first?.properties.isIdeographic ?? false)
+            if !bothCJK { out.append(CharUnit(ch: " ", startMs: w.offsetMs, durMs: 0)) }
+        }
+        let chars = Array(w.text)
+        let per = max(1, w.durMs / max(1, chars.count))
+        for (ci, ch) in chars.enumerated() {
+            out.append(CharUnit(ch: ch, startMs: w.offsetMs + ci * per, durMs: per))
+        }
+    }
+    return out
+}
 
 struct LyricsPanel: View {
     @ObservedObject var store: NowPlayingStore
+    /// 帧级进度源（仅透传：订阅发生在 ProgressBarView/TickerRow 内部，
+    /// 面板 body 不随 25fps 重算——否则 header/歌词区每帧重建）
+    let ticker: ProgressTicker
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -13,8 +44,7 @@ struct LyricsPanel: View {
         .padding(12)
         .frame(width: 360, height: 420)
         .onAppear { store.start() }
-        // 30fps 刷新由 AppDelegate 按 popover 可见性驱动（store.pulse()）。
-        // 不在 view 内挂 Timer：popover 关闭时也要重新布局，白白烧 CPU（AttributeGraph）
+        // 30fps 帧级刷新由 AppDelegate 按 popover 可见性驱动（ticker.positionMs）
     }
 
     private var header: some View {
@@ -29,15 +59,7 @@ struct LyricsPanel: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                 if store.now.durationMs > 0 {
-                    HStack(spacing: 8) {
-                        ProgressView(value: Double(max(0, store.displayPositionMs)), total: Double(store.now.durationMs))
-                            .progressViewStyle(.linear)
-                            .frame(maxWidth: .infinity)
-                        Text(formatClock(store.displayPositionMs) + " / " + formatClock(store.now.durationMs))
-                            .font(.system(size: 10, design: .monospaced))
-                            .foregroundStyle(.secondary)
-
-                    }
+                    ProgressBarView(totalMs: store.now.durationMs, ticker: ticker)
                 }
                 if !(store.candidates.isEmpty && store.lyricCredit.isEmpty && store.status != .error && store.status != .noResult) {
                     sourceRow
@@ -113,7 +135,6 @@ struct LyricsPanel: View {
                     }
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
-                    // 弹性占满可用宽度（不可用 fixedSize：会按理想尺寸撑开导致超宽）
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
                 .menuStyle(.borderlessButton)
@@ -159,30 +180,7 @@ struct LyricsPanel: View {
             if store.lines.isEmpty {
                 hint("等待播放…", detail: "在汽水音乐中播放歌曲后，这里会显示滚动歌词")
             } else {
-                lyricList
-            }
-        }
-    }
-
-    private var lyricList: some View {
-        ScrollViewReader { proxy in
-            ScrollView {
-                LazyVStack(spacing: 10) {
-                    ForEach(Array(store.lines.enumerated()), id: \.offset) { idx, line in
-                        LyricRow(line: line, isCurrent: idx == store.currentIndex,
-                                 positionMs: store.displayPositionMs)
-                            .id(idx)
-                    }
-                }
-                .padding(.vertical, 160)
-            }
-            .onChange(of: store.currentIndex) { idx in
-                if let idx {
-                    // spring 跟手且不抖动（easeInOut 在快速换行时动画反复重启会发涩）
-                    withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
-                        proxy.scrollTo(idx, anchor: .center)
-                    }
-                }
+                LyricListView(lines: store.lines, currentIndex: store.currentIndex, ticker: ticker)
             }
         }
     }
@@ -204,95 +202,192 @@ struct LyricsPanel: View {
     }
 }
 
-/// 单行歌词（当前行字符级卡拉OK：字符内部按进度渐变填充，对标汽水客户端）
-struct LyricRow: View {
-    let line: LyricLine
-    let isCurrent: Bool
-    /// 当前播放进度（ms）：当前行按字符时间窗逐字点亮，正在唱的字符内部渐变填充
-    let positionMs: Double
-
-    /// 展开后的字符单元（含词间空格；字符时间 = 词内均分词时长）
-    private struct CharUnit {
-        let ch: Character
-        let startMs: Int
-        let durMs: Int
-    }
+/// 进度条：独立子视图——只在它内帧级重算（ticker），面板其余部分不失效
+private struct ProgressBarView: View {
+    let totalMs: Double
+    @ObservedObject var ticker: ProgressTicker
 
     var body: some View {
-        if isCurrent, !charUnits.isEmpty {
-            // 当前行：逐字符布局（自动换行 + 行居中），字符内渐变填充
-            CharFlowLayout {
-                ForEach(Array(charUnits.enumerated()), id: \.offset) { _, u in
-                    unitText(u)
-                }
-            }
-            .font(.system(size: 16, weight: .semibold))
-            // 未唱字符底色（已唱/正在唱由 unitText 各自覆盖）
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity)
-            .padding(.horizontal, 12)
-        } else {
-            Text(line.text)
-                .font(.system(size: isCurrent ? 16 : 13, weight: isCurrent ? .semibold : .regular))
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
+        HStack(spacing: 8) {
+            ProgressView(value: Double(max(0, ticker.positionMs)), total: totalMs)
+                .progressViewStyle(.linear)
                 .frame(maxWidth: .infinity)
-                .padding(.horizontal, 12)
+            Text(formatClock(ticker.positionMs) + " / " + formatClock(totalMs))
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundStyle(.secondary)
         }
-    }
-
-    /// 字符文本：已唱完 = 全亮；正在唱 = 字符内「左已读/右未读」两色硬切填充；未唱 = 继承底色
-    @ViewBuilder
-    private func unitText(_ u: CharUnit) -> some View {
-        if isCurrent {
-            let rel = Int(positionMs) - line.startMs
-            let end = u.startMs + u.durMs
-            if rel >= end {
-                Text(String(u.ch)).foregroundStyle(.primary)
-            } else if rel >= u.startMs, u.durMs > 0 {
-                // 字符内进度：用 mask 按宽度裁剪，避免 LinearGradient 的插值过渡带
-                // （primary→secondary 相邻色标会渲染出可见的第三种混合色）
-                let p = min(0.999, max(0, Double(rel - u.startMs) / Double(u.durMs)))
-                Text(String(u.ch))  // 基座：未读色（继承环境 .secondary）
-                    .overlay {
-                        Text(String(u.ch))
-                            .foregroundStyle(.primary)  // 已读色，仅左侧 p 部分可见
-                            .mask(alignment: .leading) {
-                                GeometryReader { geo in
-                                    Rectangle()
-                                        .frame(width: geo.size.width * CGFloat(p))
-                                        .frame(maxWidth: .infinity, alignment: .leading)
-                                }
-                            }
-                    }
-            } else {
-                Text(String(u.ch))
-            }
-        }
-    }
-
-    /// 展开 words → 字符序列（词间空格：CJK 相邻不加空格，与 Rust join_words 一致）
-    private var charUnits: [CharUnit] {
-        var out: [CharUnit] = []
-        for (wi, w) in line.words.enumerated() {
-            if wi > 0 {
-                let prevLast = line.words[wi - 1].text.last ?? " "
-                let curFirst = w.text.first ?? " "
-                let bothCJK = (prevLast.unicodeScalars.first?.properties.isIdeographic ?? false)
-                    && (curFirst.unicodeScalars.first?.properties.isIdeographic ?? false)
-                if !bothCJK { out.append(CharUnit(ch: " ", startMs: w.offsetMs, durMs: 0)) }
-            }
-            let chars = Array(w.text)
-            let per = max(1, w.durMs / max(1, chars.count))
-            for (ci, ch) in chars.enumerated() {
-                out.append(CharUnit(ch: ch, startMs: w.offsetMs + ci * per, durMs: per))
-            }
-        }
-        return out
     }
 }
 
-/// 字符流布局：按可用宽度自动换行（行为居中），每个子视图为一个字符
+/// 歌词列表：只依赖低频数据（lines / currentIndex），ticker 仅透传——
+/// 30fps 进度刷新不会 invalidate 本列表（只有换行/歌词加载时才重算）
+private struct LyricListView: View {
+    let lines: [LyricLine]
+    let currentIndex: Int?
+    let ticker: ProgressTicker
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                LazyVStack(spacing: 10) {
+                    ForEach(Array(lines.enumerated()), id: \.offset) { idx, line in
+                        rowView(line, index: idx)
+                    }
+                }
+                .padding(.vertical, 160)
+            }
+            .onChange(of: currentIndex) { idx in
+                if let idx {
+                    // spring 跟手且不抖动（easeInOut 在快速换行时动画反复重启会发涩）
+                    withAnimation(.spring(response: 0.35, dampingFraction: 0.85)) {
+                        proxy.scrollTo(idx, anchor: .center)
+                    }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func rowView(_ line: LyricLine, index: Int) -> some View {
+        if index == currentIndex {
+            TickerRow(ticker: ticker, line: line)
+                .id(index)
+        } else {
+            StaticLyricRow(text: line.text)
+                .id(index)
+        }
+    }
+}
+
+/// 非当前行：静态整行文本（仅依赖 text，不订阅任何帧级数据）
+private struct StaticLyricRow: View, Equatable {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.system(size: 13, weight: .regular))
+            .foregroundStyle(.secondary)
+            .multilineTextAlignment(.center)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 12)
+    }
+}
+
+/// 当前行：订阅 ticker 的专用视图——ticker 每帧变化只 invalidate 本行
+private struct TickerRow: View {
+    @ObservedObject var ticker: ProgressTicker
+    let line: LyricLine
+
+    var body: some View {
+        CurrentLineView(line: line, relMs: Int(ticker.positionMs) - line.startMs)
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 12)
+    }
+}
+
+/// 当前行的「段式」渲染：同一行内按状态（已唱/正在唱/未唱）合并为段，
+/// 每段一个 Text（正在唱段为单字符 mask 填充）——子视图数从「逐字符 40~60 个」
+/// 降到「每行 3 个」，SwiftUI 布局与 GPU 层数大幅下降
+private struct CurrentLineView: View {
+    let line: LyricLine
+    let relMs: Int
+
+    /// 行内段：state 0=未唱 1=已唱完 2=正在唱（单字符）
+    private struct Segment {
+        let text: String
+        let state: Int
+        let progress: Double   // state==2 时字符内进度
+    }
+
+    private var bodyFont: NSFont { NSFont.systemFont(ofSize: 16, weight: .semibold) }
+
+    var body: some View {
+        let units = buildCharUnits(line)
+        if units.isEmpty { return AnyView(Text(line.text)) }
+        let segs = buildSegments(units)
+        if segs.isEmpty { return AnyView(Text(line.text)) }
+        return AnyView(
+            CharFlowLayout {
+                ForEach(Array(segs.enumerated()), id: \.offset) { _, s in
+                    if s.state == 2, let ch = s.text.first {
+                        CurrentCharText(ch: ch, progress: s.progress)
+                    } else if s.state == 1 {
+                        Text(s.text).foregroundStyle(.primary)
+                    } else {
+                        Text(s.text)   // 继承 .secondary 底色
+                    }
+                }
+            }
+            .font(.system(size: 16, weight: .semibold))
+            .foregroundStyle(.secondary)
+        )
+    }
+
+    /// 行号计算 + 分段：与 CharFlowLayout 同源测量（同字体宽度），按行不跨段
+    private func buildSegments(_ units: [CharUnit]) -> [Segment] {
+        let width: CGFloat = 312   // 面板 360 - 左右 padding 24 - 行 padding 24
+        let attrs: [NSAttributedString.Key: Any] = [.font: bodyFont]
+        // 状态 + 行号
+        var states: [Int] = []
+        var rows: [Int] = []
+        var x: CGFloat = 0
+        var row = 0
+        for u in units {
+            let end = u.startMs + u.durMs
+            let st: Int = relMs >= end ? 1 : (relMs >= u.startMs && u.durMs > 0 ? 2 : 0)
+            states.append(st)
+            let w = (String(u.ch) as NSString).size(withAttributes: attrs).width
+            if x + w > width, x > 0 { row += 1; x = 0 }
+            rows.append(row)
+            x += w
+        }
+        // 连续 (行,状态) 合并为段
+        var segs: [Segment] = []
+        var start = 0
+        for i in 1..<units.count {
+            if rows[i] != rows[start] || states[i] != states[start] {
+                segs.append(makeSegment(units, start, i - 1, states[start]))
+                start = i
+            }
+        }
+        segs.append(makeSegment(units, start, units.count - 1, states[start]))
+        return segs
+    }
+
+    private func makeSegment(_ units: [CharUnit], _ lo: Int, _ hi: Int, _ state: Int) -> Segment {
+        if state == 2 {
+            let u = units[lo]
+            let p = min(1.0, max(0.0, Double(relMs - u.startMs) / Double(max(1, u.durMs))))
+            return Segment(text: String(u.ch), state: 2, progress: p)
+        }
+        var t = ""
+        for i in lo...hi { t.append(units[i].ch) }
+        return Segment(text: t, state: state, progress: 0)
+    }
+}
+
+/// 正在唱的字符：基座未读色 + 上层已读色按字符内进度 mask 裁剪（两色硬切）
+private struct CurrentCharText: View {
+    let ch: Character
+    let progress: Double
+
+    var body: some View {
+        Text(String(ch))
+            .overlay {
+                Text(String(ch))
+                    .foregroundStyle(.primary)
+                    .mask(alignment: .leading) {
+                        GeometryReader { geo in
+                            Rectangle()
+                                .frame(width: geo.size.width * CGFloat(progress))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+            }
+    }
+}
+
+/// 段流布局：按可用宽度自动换行（行为居中），每个子视图为一段文本
 struct CharFlowLayout: Layout {
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let width = proposal.width ?? 312
