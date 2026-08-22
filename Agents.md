@@ -68,5 +68,8 @@ tail -f /tmp/soda-lyrics-swift.log  # Swift 日志
 
 ## 分发注意
 
-- python3 依赖 Xcode CommandLineTools（新 Mac 可能没有）；perl 是 macOS 出厂自带（备用，待解 core spawn 卡住问题）。
+- **Homebrew**：tap `zephyr-cheung/homebrew-tap`（formula 模板在 `scripts/Formula/soda-lyrics.rb`）。发版：`git tag vX.Y.Z && git push --tags` → 更新 tarball sha256 → 同步 formula 到 tap 仓库。依赖：rust/swift/python@3.12（构建/运行期均声明）。
+- 安装布局：`bin/soda-lyrics` + `libexec/soda-core` + `libexec/libmr_full.dylib`（全相对定位；`SODA_PYTHON` 由 brew service 注入 brew python）。
+- python 解释器查找顺序：`SODA_PYTHON` → `/opt/homebrew/bin/python3` → `/usr/local/bin/python3` → `/usr/bin/python3`（系统自带依赖 CommandLineTools；perl 是备用方案）。
 - 打包 .app 时：swift build 产物 + `target/release/soda-lyrics` + `resources/`（含 dylib 与源码）一起分发；Info.plist 需 `LSUIElement=true`。
+- `brew services start soda-lyrics` 开机自启（keep_alive 崩溃自动拉起）。
