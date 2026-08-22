@@ -39,6 +39,7 @@
 ## 关键技术结论（重要，勿推翻）
 
 1. **MediaRemote 只对解释器类进程返回数据**：perl/python 可以，Rust/ObjC CLI 一律 null（已用 dlopen flags/签名/直接链接全矩阵验证）。**采集必须经由解释器代理**（当前 python）——不要尝试把采集搬到 Rust 直连。
+   - **2026-08 补充：mediaremoted 对客户端有来源校验**——仅 **Apple 签名**的解释器返回数据：`/usr/bin/python3` ✓；**Homebrew 的 python（无 Apple 签名）实测一律 null**。`media.rs::locate_python()` 必须优先 `/usr/bin/python3`；formula **不得**注入 `SODA_PYTHON` 指向 brew python。
 2. **真实进度 = 当前墙钟 − CurrentPlaybackDate**：汽水音乐不上报 `ElapsedTime`（恒 0），但 dict 里有 `CurrentPlaybackDate`（曲目起点）。用这个公式，不要自推进（自推进曾导致误差/乱跳）。
 3. **elapsed 恒 0 的原因**：Electron 播放器不向系统更新该键。此前所有「自推进/增量推进/1s 偏移」方案均已废弃——直接信任 elC。
 4. **dylib 必须 ad-hoc 签名**：macOS 未签名 dylib 被解释器进程加载时直接杀进程（exit 137）。重建必须跑 `scripts/build-plugin.sh`（含 codesign）。
@@ -68,8 +69,8 @@ tail -f /tmp/soda-lyrics-swift.log  # Swift 日志
 
 ## 分发注意
 
-- **Homebrew**：tap `zephyr-cheung/homebrew-tap`（formula 模板在 `scripts/Formula/soda-lyrics.rb`）。发版：`git tag vX.Y.Z && git push --tags` → 更新 tarball sha256 → 同步 formula 到 tap 仓库。依赖：rust/swift/python@3.12（构建/运行期均声明）。
-- 安装布局：`bin/soda-lyrics` + `libexec/soda-core` + `libexec/libmr_full.dylib`（全相对定位；`SODA_PYTHON` 由 brew service 注入 brew python）。
-- python 解释器查找顺序：`SODA_PYTHON` → `/opt/homebrew/bin/python3` → `/usr/local/bin/python3` → `/usr/bin/python3`（系统自带依赖 CommandLineTools；perl 是备用方案）。
+- **Homebrew**：tap `zephyr-cheung/homebrew-tap`（formula 模板在 `scripts/Formula/soda-lyrics.rb`）。发版：`git tag vX.Y.Z && git push --tags` → 更新 tarball sha256 → 同步 formula 到 tap 仓库。依赖：rust / swift（构建期；运行期无 brew 依赖——采集用系统 python）。
+- 安装布局：`bin/soda-lyrics` + `libexec/soda-core` + `libexec/libmr_full.dylib`（全相对定位）。**不注入 SODA_PYTHON**（必须用 Apple 签名的 /usr/bin/python3）。
+- python 解释器查找顺序：`SODA_PYTHON`（显式覆盖，慎用）→ `/usr/bin/python3`（Apple 签名，MediaRemote 兼容）→ brew python 兜底。
 - 打包 .app 时：swift build 产物 + `target/release/soda-lyrics` + `resources/`（含 dylib 与源码）一起分发；Info.plist 需 `LSUIElement=true`。
 - `brew services start soda-lyrics` 开机自启（keep_alive 崩溃自动拉起）。

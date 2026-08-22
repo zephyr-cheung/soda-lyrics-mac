@@ -12,8 +12,9 @@
 # 依赖分析:
 #   - rust           构建期：Rust core（reqwest/rustls 静态链接，无系统库依赖）
 #   - swift          构建期：Swift UI（brew 独立 toolchain；AppKit/SwiftUI 为系统框架）
-#   - python@3.12    运行期：采集代理解释器（MediaRemote 只对解释器类进程返回数据，
-#                    Rust 直连一律 null——不可省）；brew services 注入 SODA_PYTHON
+#   - 系统 python3   运行期：采集代理解释器（/usr/bin/python3，Apple 签名——
+#                    MediaRemote 对客户端有来源校验，仅 Apple 签名的解释器返回数据；
+#                    brew 的 python 实测一律 null）。brew 前置要求 CLT，故必然存在)
 #   - libmr_full.dylib 运行期：自写 ObjC 采集插件，随包分发（安装时重新 ad-hoc 签名，
 #                    未签名被解释器加载会杀进程 exit 137）
 #   - macOS 13+      SwiftUI（AsyncImage 等）
@@ -28,10 +29,21 @@ class SodaLyrics < Formula
   depends_on :macos => :ventura
   depends_on "rust"
   depends_on "swift"
-  depends_on "python@3.12"
 
   def install
-    # 0) cargo 镜像（墙内友好；rsproxy 全球可访问，不影响海外构建）
+    # 0) 确保系统 python3：/usr/bin/python3 来自 Xcode Command Line Tools（Apple 签名，
+    #    MediaRemote 来源校验所必需；brew python 不可替代）。缺失时自动拉起系统安装。
+    unless File.exist?("/usr/bin/python3")
+      opoo "系统 python3 (/usr/bin/python3) 缺失 —— 正在触发 Xcode Command Line Tools 安装…"
+      system "xcode-select", "--install"
+      odie <<~EOS
+        /usr/bin/python3 不存在。请等待系统弹出「安装 Command Line Tools」对话框完成安装，
+        然后重新运行 brew install zephyr-cheung/tap/soda-lyrics。
+        （可用 xcode-select -p 验证：应输出 /Library/Developer/CommandLineTools）
+      EOS
+    end
+
+    # 0b) cargo 镜像（墙内友好；rsproxy 全球可访问，不影响海外构建）
     (buildpath/".cargo/config.toml").write <<~EOS
       [source.crates-io]
       replace-with = "rsproxy-sparse"
@@ -67,11 +79,12 @@ class SodaLyrics < Formula
   end
 
   # 开机自启：brew services start soda-lyrics
+  # 注意：不注入 SODA_PYTHON——必须使用 Apple 签名的 /usr/bin/python3
+  # （MediaRemote 来源校验；brew python 返回 null）
   service do
     run [opt_bin/"soda-lyrics"]
     keep_alive true
     process_type :interactive
-    environment_variables "SODA_PYTHON" => "#{Formula["python@3.12"].opt_bin}/python3.12"
   end
 
   def caveats
@@ -86,8 +99,8 @@ class SodaLyrics < Formula
 
       使用前提：
         - 汽水音乐 App 正在播放（仅响应 com.soda.music，其他 App 播放自动清空）
-        - MRMediaRemoteGetNowPlayingInfo 为系统公开读取接口，**无需**辅助功能授权
-          （辅助功能仅对「控制播放」类操作必需，本应用只读取）
+        - 采集使用系统 /usr/bin/python3（Apple 签名；MediaRemote 对客户端有来源校验，
+          brew python 会拿到 null——勿用 SODA_PYTHON 覆盖为 brew python）
         - 歌词来自 volcengine 公开搜索接口，需要网络
       日志：
         tail -f #{HOMEBREW_PREFIX}/var/log/soda-lyrics-swift.log

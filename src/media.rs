@@ -35,13 +35,19 @@ pub struct StreamRow {
 }
 
 
-/// 定位 python 解释器（采集代理必须经解释器进程；MediaRemote 对原生二进制返回 null）：
-/// 1) 环境变量 SODA_PYTHON（brew service 注入，指向 brew python@3.x）
-/// 2) Homebrew python（Intel /opt/usr 两个 prefix 探测）
-/// 3) 系统自带 /usr/bin/python3（依赖 CommandLineTools）
+/// 定位 python 解释器（采集代理必须经解释器进程；MediaRemote 只对解释器类进程返回数据）：
+/// 实测结论：mediaremoted 对客户端有来源校验——仅 Apple 签名的 /usr/bin/python3 可读，
+/// Homebrew 的 python（无 Apple 签名）一律返回 null。
+/// 1) 环境变量 SODA_PYTHON（用户显式覆盖，需自行承担兼容性）
+/// 2) /usr/bin/python3（系统自带，Apple 签名；依赖 CommandLineTools——
+///    能用 brew 必有 CLT，故 brew 分发场景必然存在）
+/// 3) Homebrew python 兜底（仅当系统 python 缺席时尝试）
 fn locate_python() -> String {
     if let Ok(p) = std::env::var("SODA_PYTHON") {
         if !p.is_empty() { return p }
+    }
+    if std::path::Path::new("/usr/bin/python3").exists() {
+        return "/usr/bin/python3".to_string();
     }
     let candidates = [
         "/opt/homebrew/bin/python3",

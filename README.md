@@ -121,7 +121,7 @@ MediaRemote dict（14 keys，含 CurrentPlaybackDate）
 | 运行时 | 来源 | 分发风险 |
 |---|---|---|
 | Swift UI / Rust core | 本项目编译产物 | ✅ 无 |
-| python 解释器 | 查找顺序：`SODA_PYTHON` → Homebrew `python3`（/opt/homebrew 或 /usr/local）→ `/usr/bin/python3` | ⚠️ 系统自带依赖 CommandLineTools；brew 安装则由 formula 声明 `python@3.12` 并注入 |
+| python 解释器 | `/usr/bin/python3`（**Apple 签名**——MediaRemote 对客户端有来源校验，仅 Apple 签名解释器返回数据；brew python 实测 null，勿用） | ✅ 依赖 CommandLineTools（brew 前置必有）；查找顺序：`SODA_PYTHON` → `/usr/bin/python3` → brew python 兜底 |
 | `resources/libmr_full.dylib` | 本项目源码编译 + ad-hoc 签名 | ✅ 随包分发（安装时重签） |
 | 网络（歌词搜索） | volcengine 公开接口 | ✅ 直连上游 |
 
