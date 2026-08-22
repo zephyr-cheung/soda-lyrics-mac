@@ -1,5 +1,9 @@
 mod api;
+mod api_apple;
 mod lyrics;
+mod lyrics_match;
+mod lyrics_parse;
+mod providers;
 mod media;
 mod store;
 
@@ -7,6 +11,15 @@ use serde_json::{json, Value};
 use std::io::{BufRead, Write};
 use std::sync::mpsc::{channel, Sender};
 use std::time::Duration;
+
+/// 播放器白名单 → Provider 路由（其他 App 一律清空）
+fn provider_for(app_id: &str) -> Option<store::Provider> {
+    match app_id {
+        "com.soda.music" => Some(store::Provider::Soda),
+        "com.apple.Music" => Some(store::Provider::Apple),
+        _ => None,
+    }
+}
 
 fn main() {
     store::log("soda-core starting");
@@ -48,6 +61,10 @@ fn main() {
     // 切歌辅助检测：MediaRemote 元数据滞后时（切歌瞬间仍报旧 title），用
     // 「位置大幅回退到开头」识别切歌，提前清空并触发加载，避免旧歌词残留
     let mut last_track_pos: Option<f64> = None;
+    // 当前活动播放器 bundle id（pick/refresh 路由 Provider 用）
+    let mut last_provider_id: Option<String> = None;
+    // 当前曲目 adam id（Apple 系；AMLL 词级歌词直查用）
+    let mut last_adam: i64 = 0;
 
     let mut out = std::io::stdout();
     loop {
@@ -56,7 +73,7 @@ fn main() {
         let mut track_event = false;
         while let Some(snap) = store::recv_timeout(&snap_rx, 0) {
             let app_id = snap.app_id.clone();
-            if app_id == "com.soda.music" {
+            if let Some(provider) = provider_for(&app_id) {
                 // 位置回退检测：标题未变但正在播放且位置回到开头（距上次 >20s 回退）
                 if !snap.title.is_empty() && snap.playing && snap.position_ms < 5000.0 {
                     if let Some(prev) = last_track_pos {
@@ -72,7 +89,9 @@ fn main() {
                                         title: snap.title.clone(),
                                         artist: snap.artist.clone(),
                                         player_dur_ms: snap.duration_ms,
+                                        provider,
                                         manual: None,
+                                        adam_id: snap.adam_id,
                                     })
                                     .ok();
                                 track_event = true;
@@ -97,11 +116,15 @@ fn main() {
                             title: snap.title.clone(),
                             artist: snap.artist.clone(),
                             player_dur_ms: snap.duration_ms,
+                            provider,
                             manual: None,
+                            adam_id: snap.adam_id,
                         })
                         .ok();
-                    store::log(&format!("track-change -> {}", snap.title));
+                    store::log(&format!("track-change[{:?}] -> {}", provider, snap.title));
                 }
+                last_provider_id = Some(app_id.clone());
+                last_adam = snap.adam_id;
                 last_track_pos = if snap.playing { Some(snap.position_ms) } else { None };
             } else if app_id.is_empty() {
                 // 查询失败 / 无数据：保持现状，避免误清空；Swift 侧自推进兜底
@@ -140,7 +163,9 @@ fn main() {
                                     title: title.clone(),
                                     artist: artist.clone(),
                                     player_dur_ms: dur,
+                                    provider: provider_for(last_provider_id.as_deref().unwrap_or("")).unwrap_or_default(),
                                     manual: Some(t.clone()),
+                                    adam_id: last_adam,
                                 }).ok();
                                 store::log(&format!("user pick -> {} {}", id, t.title));
                             } else {
@@ -159,7 +184,9 @@ fn main() {
                                 title: title.clone(),
                                 artist: artist.clone(),
                                 player_dur_ms: dur,
+                                provider: provider_for(last_provider_id.as_deref().unwrap_or("")).unwrap_or_default(),
                                 manual: None,
+                                adam_id: last_adam,
                             }).ok();
                             store::log("refresh -> re-search current track");
                         }

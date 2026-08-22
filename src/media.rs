@@ -19,6 +19,8 @@ pub struct Snapshot {
     pub available: bool,
     /// 正在播放的应用 Bundle ID（mediaremote-rs 提供）
     pub app_id: String,
+    /// iTunes Store adam id（Apple 系；路由 AMLL 词级歌词用）
+    pub adam_id: i64,
 }
 
 /// stream 行（适配器持续输出的 NowPlayingInfo JSON）
@@ -30,8 +32,14 @@ pub struct StreamRow {
     pub rate: f64,
     pub playing: bool,
     pub app_id: String,
-    /// 真实进度：now - CurrentPlaybackDate（系统 dict 提供，适配器恒 0 但 cpd 准确）
+    /// elC：now - CurrentPlaybackDate（汽水提供；Apple Music 恒 -1）
     pub elapsed_ms: f64,
+    /// Apple Music：ElapsedTime 快照（播放开始时刻，播放中不更新）
+    pub elapsed_snapshot_ms: f64,
+    /// Apple Music：Timestamp epoch（毫秒）——快照时刻，用于 elC 缺失时实时推算
+    pub ts_ms: f64,
+    /// iTunes Store adam id（Apple 系内容；汽水/第三方 0）
+    pub adam_id: i64,
 }
 
 
@@ -99,17 +107,22 @@ pub fn spawn_stream_source(interval_ms: u64) -> (Option<Child>, Receiver<StreamR
                             continue;
                         }
                         if let Ok(v) = serde_json::from_str::<Value>(trimmed) {
-                            let _ = v;
-                            // 调试：行到达节流日志
-                            // (在 parse 处计数)
+                            // 播放器路由：Apple 系内容带 iTunes Store adam id（汽水/第三方恒 0）
+                            let adam = v.get("adamID").and_then(|x| x.as_i64()).unwrap_or(0);
+                            // 真实进度：elC（汽水 cpd 折算）优先；Apple Music 无 cpd 时
+                            // elapsed 为快照、ts 为快照时刻（core 用 elapsed+(now-ts)*rate 实时推算）
+                            let elc = v.get("elC").and_then(|x| x.as_f64()).filter(|e| *e >= 0.0).unwrap_or(-1.0);
                             let row = StreamRow {
                                 title: v.get("title").and_then(|x| x.as_str()).unwrap_or("").to_string(),
                                 artist: v.get("artist").and_then(|x| x.as_str()).unwrap_or("").to_string(),
                                 duration_ms: v.get("dur").and_then(|x| x.as_f64()).unwrap_or(0.0) * 1000.0,
                                 rate: v.get("rate").and_then(|x| x.as_f64()).unwrap_or(1.0),
                                 playing: v.get("rate").and_then(|x| x.as_f64()).unwrap_or(0.0) > 0.0,
-                                app_id: "com.soda.music".to_string(),
-                                elapsed_ms: v.get("elC").and_then(|x| x.as_f64()).unwrap_or(-1.0) * 1000.0,
+                                app_id: if adam > 0 { "com.apple.Music" } else { "com.soda.music" }.to_string(),
+                                elapsed_ms: elc * 1000.0,
+                                elapsed_snapshot_ms: v.get("elapsed").and_then(|x| x.as_f64()).unwrap_or(-1.0) * 1000.0,
+                                ts_ms: v.get("ts").and_then(|x| x.as_f64()).unwrap_or(0.0) * 1000.0,
+                                adam_id: adam,
                             };
                             if tx.send(row).is_err() {
                                 break;
@@ -201,6 +214,10 @@ impl Collector {
             }
         }
         let mut row_elc: f64 = -1.0;
+        let mut row_elapsed: f64 = -1.0;
+        let mut row_ts: f64 = 0.0;
+        let mut row_rate: f64 = 1.0;
+        let mut row_adam: i64 = 0;
         if let Some(r) = row {
             // 空 title 行（无信息/查询异常）：完全忽略，避免误清状态
             if r.title.is_empty() {
@@ -230,16 +247,31 @@ impl Collector {
             self.last_dur = r.duration_ms;
             self.have_song = !r.title.is_empty();
             row_elc = r.elapsed_ms;
+            row_elapsed = r.elapsed_snapshot_ms;
+            row_ts = r.ts_ms;
+            row_rate = r.rate;
+            row_adam = r.adam_id;
         }
 
-        // 2) 进度：优先真实进度（elC = now - CurrentPlaybackDate，系统口径精确）
-        if self.playing && self.have_song && row_elc >= 0.0 {
-            self.pos = row_elc;
-        } else {
-            // 兜底增量推进（暂停冻结）
-            let dt = now.duration_since(self.last_at).as_secs_f64() * 1000.0;
-            if self.playing && self.have_song && dt > 0.0 && dt < 5000.0 {
-                self.pos += dt * self.rate;
+        // 2) 进度：真实优先
+        //    a) elC = now - CurrentPlaybackDate（汽水，系统口径精确）
+        //    b) Apple Music：ElapsedTime 快照 + Timestamp 推算 = elapsed + (now - ts) * rate
+        //       （播放中 dict 不刷新，但 ts 时刻已知，推算无漂移）
+        //    c) 兜底增量推进（暂停冻结）
+        if self.playing && self.have_song {
+            if row_elc >= 0.0 {
+                self.pos = row_elc;
+            } else if row_elapsed >= 0.0 && row_ts > 0.0 {
+                let epoch_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as f64;
+                self.pos = row_elapsed + (epoch_ms - row_ts) * row_rate;
+            } else {
+                let dt = now.duration_since(self.last_at).as_secs_f64() * 1000.0;
+                if dt > 0.0 && dt < 5000.0 {
+                    self.pos += dt * self.rate;
+                }
             }
         }
         self.last_at = now;
@@ -272,6 +304,7 @@ impl Collector {
         snap.playing = self.playing;
         snap.available = self.have_song;
         snap.app_id = self.app_id.clone();
+        snap.adam_id = row_adam;
         snap
     }
 }

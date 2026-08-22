@@ -1,13 +1,13 @@
 # Agents.md · soda-lyrics-mac
 
-> 汽水音乐 macOS 菜单栏歌词助手：状态栏滚动歌词 + 卡拉OK面板。本文件是给后续 agent（人或 AI）的上下文速查。
+> **苏打歌词**（SodaLyrics）：macOS 状态栏歌词助手，适配 **汽水音乐 + Apple Music** 双平台。本文件是给后续 agent（人或 AI）的上下文速查。
 
 ## 项目现状
 
-- **阶段**：功能完成并可运行（Swift UI + Rust core + python 代理三进程协同）。
+- **阶段**：功能完成并可运行（Swift UI + Rust core + python 代理三进程协同）；Apple Music 双平台已接入（dev 验证中，Apple 板块未正式发版）。
 - **当前运行**：`swift-ui/.build/release/soda-lyrics` 启动（自动拉起 Rust core 与 python 代理）。
 - **进度**：真实进度来自系统 MediaRemote 的 `CurrentPlaybackDate`（`elC = 墙钟 − CurrentPlaybackDate`），与播放器同步；非自推进。
-- **白名单**：只响应 `com.soda.music`；其他 App 播放自动清空状态。
+- **白名单/路由**：`com.soda.music` → 汽水 Provider（volcengine）；`com.apple.Music`（按 iTunesStoreIdentifier>0 判定）→ Apple 多源引擎；其他 App 播放自动清空状态。
 
 ## 架构（三进程）
 
@@ -16,14 +16,18 @@
    - `LyricsPanel.swift`：NSPopover 面板——封面/歌名/歌手/进度条 + 歌词列表（当前行高亮、词级染色带淡入、spring 自动滚动、候选切换）
    - `PipelineStore.swift`（库）：spawn Rust core，读 stdout JSONL 行 → @Published 状态
 2. **Rust core**（`src/`，`cargo build --release`）
-   - `main.rs`：主循环——白名单过滤 → 状态合并 → 100ms 快照 JSONL；换歌时发全量歌词
-   - `media.rs`：spawn python 代理（ctypes 调 dylib）→ 解析 → 真实进度合成（elC）
-   - `api.rs`：volcengine 搜索（limit=20，时长匹配过滤剔除不一致候选）+ beta-luna `h5_seo_track` 词级歌词
+   - `main.rs`：主循环——播放器白名单路由（Soda/Apple）→ 状态合并 → 100ms 快照 JSONL；换歌时发全量歌词
+   - `media.rs`：spawn python 代理（ctypes 调 dylib）→ 解析 → 进度合成（elC 优先 → Apple elapsed+ts 外推 → 自推进）；adamID 路由
+   - `api.rs`（汽水专属）：volcengine 搜索（limit=20，时长匹配过滤）+ beta-luna `h5_seo_track` 词级歌词
+   - `api_apple.rs`：Apple 歌词引擎入口（并发多源 → 打分排序 → 解析选优）+ iTunes 候选
+   - `providers.rs`：9 源并发（LRCLIB/Kugou/QQ/网易/Kuwo/AMLL/Migu/Musixmatch/volcengine）——移植自 Lyrics-Plus（MIT）
+   - `lyrics_match.rs`：打分匹配（title/artist/album/duration 加权 + normalized_levenshtein + 繁简归一 + Smart 排序）
+   - `lyrics_parse.rs`：统一解析（LRC 行级 / YRC / QRC / Enhanced / volcengine 词级 / TTML → LyricLine）
    - `lyrics.rs`：词级解析（全角逗号归一化、词间空格、句级+词级）
-   - `store.rs`：采集线程（100ms 帧）+ 歌词加载线程
-3. **python 代理**（macOS 自带 `/usr/bin/python3`，一次 fork 常驻）
-   - `resources/libmr_full.dylib`（自写 ObjC 插件，源码 `libmr_full.m`）→ `MRMediaRemoteGetNowPlayingInfo`
-   - 200ms 循环输出 `{title,artist,dur,rate,elC}`
+   - `store.rs`：采集线程（100ms 帧）+ 歌词加载线程（Provider 分派，汽水流程不受影响）
+3. **python 代理**（Apple 签名的 `/usr/bin/python3`，一次 fork 常驻）
+   - `resources/libmr_full.dylib`（自写 ObjC 插件，源码 `libmr_full.m`）→ `MRMediaRemoteGetNowPlayingInfo` + `MRMediaRemoteGetNowPlayingApplicationDisplayName`（未用，需 MROrigin）
+   - 200ms 循环输出 `{title,artist,dur,rate,elC,elapsed,ts,adamID}`（elapsed=ElapsedTime 快照、ts=Timestamp epoch、adamID=Apple 曲目 id）
 
 ## 通信协议（JSONL）
 
@@ -44,7 +48,7 @@
 3. **elapsed 恒 0 的原因**：Electron 播放器不向系统更新该键。此前所有「自推进/增量推进/1s 偏移」方案均已废弃——直接信任 elC。
 4. **dylib 必须 ad-hoc 签名**：macOS 未签名 dylib 被解释器进程加载时直接杀进程（exit 137）。重建必须跑 `scripts/build-plugin.sh`（含 codesign）。
 5. **python 输出必须无缓冲**：spawn 用 `python3 -u`；perl 方案需 `$|=1`（perl 在 core spawn 场景未打通，勿回退 perl）。
-6. **只响应汽水音乐**：`main.rs` 三段式——白名单正常 / app_id 空保持现状 / 其他 App 清空（防抖：仅清一次）。
+6. **播放器路由（双平台）**：`provider_for(app_id)`——`com.soda.music` → Soda（volcengine）；`com.apple.Music` → Apple 多源引擎；**Apple 判定依据**：now-playing dict 的 `kMRMediaRemoteNowPlayingInfoiTunesStoreIdentifier`（adam id）> 0（MediaRemote 的 dict 不含 bundle id，`GetNowPlayingApplicationPid` 符号不存在、`DisplayName` 需 MROrigin——勿再走这些路）；app_id 空保持现状 / 其他 App 清空（防抖：仅清一次）。
 
 ## 已知坑
 

@@ -1,6 +1,6 @@
-# 🎵 汽水歌词 · SodaLyrics
+# 🥤 苏打歌词 · SodaLyrics
 
-macOS 菜单栏歌词助手：在**顶部状态栏**实时显示汽水音乐（桌面版）正在播放的滚动歌词；点击歌词展开**卡拉OK面板**（逐字高亮、自动滚动、真实进度）。
+macOS 状态栏歌词助手：**汽水音乐 + Apple Music** 双平台适配——在**顶部状态栏**实时显示正在播放的滚动歌词；点击歌词展开**卡拉OK面板**（逐字高亮、自动滚动、真实进度）。
 
 <p align="center">
   <img src="https://img.shields.io/github/stars/zephyr-cheung/soda-lyrics-mac?style=flat-square&logo=github" alt="GitHub stars">
@@ -8,7 +8,7 @@ macOS 菜单栏歌词助手：在**顶部状态栏**实时显示汽水音乐（�
   <img src="https://img.shields.io/badge/language-Swift%20%C2%B7%20Rust%20%C2%B7%20Python-blue?style=flat-square" alt="Language: Swift · Rust · Python">
   <a href="https://github.com/zephyr-cheung/homebrew-tap"><img src="https://img.shields.io/badge/homebrew-tap-orange?style=flat-square&logo=homebrew" alt="Homebrew tap"></a>
   <img src="https://img.shields.io/badge/macOS-13%2B-black?style=flat-square&logo=apple" alt="macOS 13+">
-  <img src="https://img.shields.io/badge/target-%E6%B1%BD%E6%B0%B4%E9%9F%B3%E4%B9%90-green?style=flat-square" alt="Target: 汽水音乐">
+  <img src="https://img.shields.io/badge/target-%E6%B1%BD%E6%B0%B4%E9%9F%B3%E4%B9%90%20%C2%B7%20Apple%20Music-green?style=flat-square" alt="Target: 汽水音乐 · Apple Music">
 </p>
 
 <p align="center">
@@ -18,24 +18,29 @@ macOS 菜单栏歌词助手：在**顶部状态栏**实时显示汽水音乐（�
 ```
 ┌──────────────────────────────────────────────┐
 │ Swift UI（swift-ui/，SwiftUI + AppKit）        │
-│   · NSStatusItem 自绘跑马灯（0.1s 重绘）       │
-│   · NSPopover 歌词面板（卡拉OK/进度/滚动）      │
+│   · NSStatusItem 自绘跑马灯（位图+GPU 平移）    │
+│   · NSPopover 卡拉OK面板（逐字/进度/滚动/封面） │
 └───────────────────┬──────────────────────────┘
                     │ JSONL 管道（快照 100ms；换歌全量歌词）
 ┌───────────────────▼──────────────────────────┐
 │ Rust core（src/，常驻进程）                    │
-│   main.rs   状态合并 / 白名单 / JSONL 输出      │
-│   media.rs  MediaRemote 采集（python 代理）    │
-│   api.rs    搜索 + h5_seo_track 歌词           │
-│   lyrics.rs 词级歌词解析                       │
-│   store.rs  采集 / 歌词加载线程                │
+│  main.rs  播放器白名单路由（Soda / Apple）      │
+│  media.rs MediaRemote 采集（adamID + 双进度源）│
+│  store.rs 采集 / 歌词加载线程 / Provider 分派   │
+│  api.rs   汽水：volcengine 搜索 + 词级歌词      │
+│  api_apple.rs Apple：并发引擎入口 + iTunes 候选 │
+│  providers.rs 9 源并发（LRCLIB/Kugou/QQ/网易/ │
+│               Kuwo/AMLL/Migu/Musixmatch/volc… │
+│  lyrics_match.rs 打分匹配（Levenshtein+繁简）   │
+│  lyrics_parse.rs 统一解析（YRC/QRC/TTML/LRC）  │
 └───────────────────┬──────────────────────────┘
                     │ stdout（python3 -u 无缓冲）
 ┌───────────────────▼──────────────────────────┐
-│ python 代理（macOS 自带 /usr/bin/python3）     │
+│ python 代理（Apple 签名 /usr/bin/python3）     │
 │  ctypes → resources/libmr_full.dylib          │
 │   → MRMediaRemoteGetNowPlayingInfo（系统）     │
-│   200ms 循环输出 {title,artist,dur,rate,elC}  │
+│   200ms 循环输出 {title,artist,dur,rate,elC,  │
+│   elapsed,ts,adamID}                         │
 └──────────────────────────────────────────────┘
 ```
 
@@ -43,10 +48,10 @@ macOS 菜单栏歌词助手：在**顶部状态栏**实时显示汽水音乐（�
 
 - **菜单栏跑马灯**：当前歌词行在状态栏平滑滚动（长歌词自动滚、短歌词居中）
 - **卡拉OK面板**：点击菜单栏图标展开——歌名/歌手/进度条 + 歌词列表，当前行高亮、已唱词逐字染色、自动滚动跟随
-- **真实进度**：系统 dict 的 `CurrentPlaybackDate`（曲目起点时刻）→ `elC = 当前墙钟 − CurrentPlaybackDate`，与播放器**精确同步**（误差 <200ms，无累积漂移，暂停/切歌自然正确）
-- **只响应汽水音乐**：按 `bundle_identifier == com.soda.music` 白名单过滤，其他 App 播放自动清空（显示兜底文案）
-- **免登录歌词**：直连上游公开接口（volcengine 搜索 + beta-luna `h5_seo_track` 词级歌词），无任何账号凭据
-- **词级时间戳**：句级 + 词级（卡拉OK逐字染色数据源）
+- **双平台适配**：汽水音乐（`com.soda.music`）与 Apple Music（`com.apple.Music`）白名单路由，其他 App 播放自动清空
+- **真实进度**：汽水走 `elC = 墙钟 − CurrentPlaybackDate`；Apple Music 无 cpd 但有 ElapsedTime + Timestamp → `elapsed + (now − ts) × rate` 实时推算，均精确同步（暂停/切歌自然正确）
+- **免登录歌词**：汽水直连 volcengine（搜索 + 词级歌词）；Apple Music 用**多源并发引擎**（LRCLIB / Kugou / QQ / 网易 / Kuwo / AMLL / Migu / Musixmatch / volcengine），打分匹配（Levenshtein + 繁简归一 + 时长差）后**词级优先**渲染
+- **词级时间戳**：统一解析 YRC / QRC / TTML / Enhanced LRC / 词级 LRC（均分降级）→ 卡拉OK逐字染色数据源
 
 ## 目录结构
 
@@ -158,6 +163,7 @@ tail -f /tmp/soda-lyrics-rust.log    # Rust 侧日志（换歌/白名单/歌词�
 - [汽水音乐](https://www.qishui.com/) —— 本项目服务的上游播放器（抖音官方出品）
 - [Homebrew](https://brew.sh) —— 分发与开机自启（`brew services`）方案
 - [Swift / SwiftUI](https://www.swift.org) 与 [Rust](https://www.rust-lang.org) —— 开发语言与工具链
-- 调研参考：[qishui-api](https://github.com/guowenye/qishui-api)（歌词接口链路）、[mediaremote-rs](https://github.com/TNXG/mediaremote-rs)（MediaRemote 适配，未输出真实进度故自写插件替代）
+- 调研参考：[qishui-api](https://github.com/guowenye/qishui-api)（歌词接口链路）、[mediaremote-rs](https://github.com/TNXG/mediaremote-rs)（MediaRemote 适配调研）
+- 特别鸣谢：[Lyrics-Plus](https://github.com/afeibukaixin/Lyrics-Plus)——Apple Music 多源歌词匹配引擎（并发源 + 加权打分 + Smart 排序）与各 Provider/解析器实现均移植自该项目（MIT）
 
 感谢所有开源生态与 [@zephyr-cheung](https://github.com/zephyr-cheung) 的维护 ❤️
