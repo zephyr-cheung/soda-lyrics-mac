@@ -15,11 +15,26 @@ macOS 状态栏歌词助手：**汽水音乐 + Apple Music** 双平台适配—�
   <img src="docs/panel.png" alt="卡拉OK面板截图" width="420">
 </p>
 
+## ✨ 一键安装（Homebrew）
+
+```bash
+# 安装（自动带 tap 信任；新版 brew 需要 trust，旧版自动跳过）
+brew tap zephyr-cheung/homebrew-tap
+brew trust zephyr-cheung/tap 2>/dev/null || true
+brew install zephyr-cheung/tap/soda-lyrics
+
+# 开机自启并启动（登录自动运行，崩溃自动拉起）
+brew services start soda-lyrics
+```
+
+> 安装后即出现在菜单栏：点开汽水音乐 / Apple Music 播放即可见滚动歌词；点击歌词展开卡拉OK面板。
+
 ```
 ┌──────────────────────────────────────────────┐
 │ Swift UI（swift-ui/，SwiftUI + AppKit）        │
 │   · NSStatusItem 自绘跑马灯（位图+GPU 平移）    │
 │   · NSPopover 卡拉OK面板（逐字/进度/滚动/封面） │
+│   · 设置面板（⚙️ 自启/更新/关于/退出）          │
 └───────────────────┬──────────────────────────┘
                     │ JSONL 管道（快照 100ms；换歌全量歌词）
 ┌───────────────────▼──────────────────────────┐
@@ -52,6 +67,7 @@ macOS 状态栏歌词助手：**汽水音乐 + Apple Music** 双平台适配—�
 - **真实进度**：汽水走 `elC = 墙钟 − CurrentPlaybackDate`；Apple Music 无 cpd 但有 ElapsedTime + Timestamp → `elapsed + (now − ts) × rate` 实时推算，均精确同步（暂停/切歌自然正确）
 - **免登录歌词**：汽水直连 volcengine（搜索 + 词级歌词）；Apple Music 用**多源并发引擎**（LRCLIB / Kugou / QQ / 网易 / Kuwo / AMLL / Migu / Musixmatch / volcengine），打分匹配（Levenshtein + 繁简归一 + 时长差）后**词级优先**渲染
 - **词级时间戳**：统一解析 YRC / QRC / TTML / Enhanced LRC / 词级 LRC（均分降级）→ 卡拉OK逐字染色数据源
+- **设置面板**：展开面板右上角 ⚙️ 齿轮入口——开机自启（brew services/LaunchAgent）、更新检测与自动更新（**自动探测代理**）、开源地址 / 作者 / MIT、一键退出（服务托管时先停服务防 KeepAlive 拉回）
 
 ## 目录结构
 
@@ -72,7 +88,7 @@ soda-lyrics-mac/
 │   ├── Package.swift     # SwiftPM（macOS 13+）
 │   └── Sources/
 │       ├── SodaLyrics/           # 库：Models.swift（数据结构）、PipelineStore.swift（spawn core + 管道解析）
-│       └── soda-lyrics/          # 可执行：SodaLyricsApp.swift（AppDelegate 自绘）、LyricsPanel.swift（面板）
+│       └── soda-lyrics/          # 可执行：SodaLyricsApp.swift（AppDelegate 自绘）、LyricsPanel.swift（面板）、SettingsView.swift（设置面板）
 ├── resources/
 │   ├── libmr_full.m      # ★ 自写 ObjC 插件源码（MediaRemote dict + ElapsedTime/Timestamp/adamID 输出）
 │   └── libmr_full.dylib  # 编译产物（ad-hoc 签名）

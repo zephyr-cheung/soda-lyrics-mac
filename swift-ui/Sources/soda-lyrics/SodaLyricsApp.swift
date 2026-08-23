@@ -49,6 +49,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         popover.contentViewController = NSHostingController(rootView: LyricsPanel(store: store, ticker: ticker))
         popover.behavior = .transient
 
+        // 自动更新：开关开启时启动后静默检查 GitHub 新版本
+        AutoUpdateCheckOnLaunch()
+
         let t = Timer(timeInterval: 1.0 / 60.0, repeats: true) { [weak self] _ in
             guard let self else { return }
             MainActor.assumeIsolated {

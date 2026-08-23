@@ -35,16 +35,29 @@ struct LyricsPanel: View {
     /// 面板 body 不随 25fps 重算——否则 header/歌词区每帧重建）
     let ticker: ProgressTicker
 
+    /// 面板 UI 状态（设置页切换；@State 宏在部分 toolchain 不可用，用 ObservableObject）
+    /// 共享单例：避免 @ObservedObject 默认值在 body 重建时重置（见 SettingsView.Model 注释）
+    final class PanelUI: ObservableObject {
+        static let shared = PanelUI()
+        @Published var showSettings = false
+    }
+
+    @ObservedObject private var ui = PanelUI.shared
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            header
-            Divider().padding(.vertical, 8)
-            lyricArea
+        if ui.showSettings {
+            SettingsView(onClose: { ui.showSettings = false })
+        } else {
+            VStack(alignment: .leading, spacing: 0) {
+                header
+                Divider().padding(.vertical, 8)
+                lyricArea
+            }
+            .padding(12)
+            .frame(width: 360, height: 420)
+            .onAppear { store.start() }
+            // 30fps 帧级刷新由 AppDelegate 按 popover 可见性驱动（ticker.positionMs）
         }
-        .padding(12)
-        .frame(width: 360, height: 420)
-        .onAppear { store.start() }
-        // 30fps 帧级刷新由 AppDelegate 按 popover 可见性驱动（ticker.positionMs）
     }
 
     private var header: some View {
@@ -65,6 +78,16 @@ struct LyricsPanel: View {
                     sourceRow
                 }
             }
+            Spacer(minLength: 0)
+            Button {
+                ui.showSettings = true
+            } label: {
+                Image(systemName: "gearshape")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("设置")
         }
     }
 

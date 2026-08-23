@@ -13,7 +13,8 @@
 
 1. **Swift UI**（`swift-ui/`，SwiftPM + AppKit）
    - `SodaLyricsApp.swift`：AppDelegate、NSStatusItem 自绘跑马灯（位图缓存 + CALayer contentsRect GPU 平移，60fps Timer；避开 SwiftUI TimelineView 饿死 runloop 的坑）。面板 30fps 刷新由本类按 popover 可见性节流驱动（关闭时零开销）
-   - `LyricsPanel.swift`：NSPopover 面板——封面/歌名/歌手/进度条 + 歌词列表（当前行高亮、词级染色带淡入、spring 自动滚动、候选切换）
+   - `LyricsPanel.swift`：NSPopover 面板——封面/歌名/歌手/进度条 + 歌词列表（当前行高亮、词级染色带淡入、spring 自动滚动、候选切换、右上角 ⚙️ 齿轮切设置页）
+   - `SettingsView.swift`：设置面板——开机自启（brew services / 自管 LaunchAgent）、更新检测 / 自动更新（GitHub Releases API + 自动代理探测）、开源地址 / 作者 / MIT、退出软件（服务托管时先停服务再退出）
    - `PipelineStore.swift`（库）：spawn Rust core，读 stdout JSONL 行 → @Published 状态
 2. **Rust core**（`src/`，`cargo build --release`）
    - `main.rs`：主循环——播放器白名单路由（Soda/Apple）→ 状态合并 → 100ms 快照 JSONL；换歌时发全量歌词
@@ -59,6 +60,12 @@
 - 面板 30fps 刷新只在 popover 可见时驱动（Store.pulse 由 AppDelegate 节流）；在 LyricsPanel 内挂 Timer 会让 popover 关闭时也重算 AttributeGraph（CPU 10%+）。
 - 跑马灯：滚完一圈停在尾部等换行（不要归零重滚，会「闪回句首」）；位图左右 pad=maxWidth 保证 contentsRect 恒在 [0,1]；固定 `withLength: 260`（variableLength 无 image 会塌缩）。
 - 父项目 `AGENTS.md` 提到的 `qishui-api` 本地服务与本项目无关（本项目直连上游）。
+- **设置面板（SettingsView.swift）**：
+  - 当前 Swift toolchain 的 `@State`/`@AppStorage` 宏不可用（SwiftUIMacros 插件缺失，`external macro implementation type ... could not be found`）——状态一律用 `@ObservedObject` + **共享单例**（`Model.shared`/`PanelUI.shared`）；⚠️ `@ObservedObject var x = Model()` 默认值会在每次 body 重建时 new 新实例导致状态重置（表现为「点击无反应」），必须单例或外部注入。
+  - URLSession **不走环境变量代理**（只认系统网络偏好）→ 更新检查用 `detectProxyDictionary()`：`https_proxy` 等 env（http/socks5 区分）→ `scutil --proxy` → 直连兜底。
+  - `brew services`/`launchctl` 调用必须**后台线程**执行（同步会阻塞主线程/面板弹出），且加超时保护（12s terminate）。
+  - 「退出软件」先停服务再退出：brew services `KeepAlive=true` 会在退出后立即拉回进程。
+  - 版本号在 `SettingsView.swift` 的 `AppInfo.version` 维护（发版时同步）。
 
 ## 开发命令
 
