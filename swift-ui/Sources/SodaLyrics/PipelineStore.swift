@@ -51,9 +51,9 @@ public final class NowPlayingStore: ObservableObject {
         if status == .loading { return "加载歌词…" }
         if !now.title.isEmpty { return now.title }
         switch status {
-        case .appMissing: return "汽水音乐未运行"
+        case .appMissing: return "未检测到播放器（汽水音乐 / Apple Music）"
         case .noResult, .error: return "未找到歌词"
-        default: return "汽水歌词"
+        default: return "苏打歌词"
         }
     }
 

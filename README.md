@@ -23,11 +23,12 @@ brew tap zephyr-cheung/homebrew-tap
 brew trust zephyr-cheung/tap 2>/dev/null || true
 brew install zephyr-cheung/tap/soda-lyrics
 
-# 开机自启并启动（登录自动运行，崩溃自动拉起）
-brew services start soda-lyrics
+# 运行方式二选一：
+brew services run soda-lyrics      # ① 单次运行（本次启动，不开机自启）
+brew services start soda-lyrics    # ② 开机自启（登录自动运行，崩溃自动拉起）
 ```
 
-> 安装后即出现在菜单栏：点开汽水音乐 / Apple Music 播放即可见滚动歌词；点击歌词展开卡拉OK面板。
+> 安装后即出现在菜单栏：点开汽水音乐 / Apple Music 播放即可见滚动歌词；点击歌词展开卡拉OK面板。停止：`brew services stop soda-lyrics`；状态：`brew services info soda-lyrics`。
 
 ```
 ┌──────────────────────────────────────────────┐
@@ -67,7 +68,7 @@ brew services start soda-lyrics
 - **真实进度**：汽水走 `elC = 墙钟 − CurrentPlaybackDate`；Apple Music 无 cpd 但有 ElapsedTime + Timestamp → `elapsed + (now − ts) × rate` 实时推算，均精确同步（暂停/切歌自然正确）
 - **免登录歌词**：汽水直连 volcengine（搜索 + 词级歌词）；Apple Music 用**多源并发引擎**（LRCLIB / Kugou / QQ / 网易 / Kuwo / AMLL / Migu / Musixmatch / volcengine），打分匹配（Levenshtein + 繁简归一 + 时长差）后**词级优先**渲染
 - **词级时间戳**：统一解析 YRC / QRC / TTML / Enhanced LRC / 词级 LRC（均分降级）→ 卡拉OK逐字染色数据源
-- **设置面板**：展开面板右上角 ⚙️ 齿轮入口——开机自启（brew services/LaunchAgent）、更新检测与自动更新（**自动探测代理**）、开源地址 / 作者 / MIT、一键退出（服务托管时先停服务防 KeepAlive 拉回）
+- **设置面板**：展开面板右上角 ⚙️ 齿轮入口——运行方式指引（**单次运行 / 开机自启** brew 命令）、更新检测与自动更新（**自动探测代理**）、开源地址 / 作者 / MIT、一键退出（服务托管时先停服务防 KeepAlive 拉回）
 
 ## 目录结构
 

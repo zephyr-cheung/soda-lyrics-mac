@@ -4,23 +4,21 @@ import SodaLyrics
 
 /// 应用信息（当前版本：发版时同步）
 enum AppInfo {
-    static let version = "0.3.1"
+    static let version = "0.3.2"
     static let repo = "https://github.com/zephyr-cheung/soda-lyrics-mac"
     static let author = "https://github.com/zephyr-cheung"
 }
 
-/// 设置面板（展开面板内切换视图）：开机自启 / 更新检测与自动更新 / 开源与作者信息 / MIT
+/// 设置面板（展开面板内切换视图）：运行方式 / 更新检测与自动更新 / 关于 / 退出
 struct SettingsView: View {
     let onClose: () -> Void
 
-    /// 状态模型（避免 @State 宏依赖，兼容构建工具链）
-    /// 必须用共享单例：SwiftUI 在每次 body 重建时会重新求值 @ObservedObject 默认值，
-    /// 若每次 new 实例，任何状态变化都会在下一次重建时被重置（表现为点击无反应）
+    /// 状态模型（共享单例：避免 @ObservedObject 默认值在 body 重建时重置）
     final class Model: ObservableObject {
         static let shared = Model()
-        @Published var autoLaunch = false
         @Published var checkState: Check = .idle
         @Published var updating = false
+        @Published var runMode = "检测中…"
         enum Check: Equatable { case idle, checking, upToDate, found(String), failed(String) }
     }
 
@@ -31,23 +29,22 @@ struct SettingsView: View {
             header
             Divider().padding(.vertical, 10)
             List {
-                Section("启动与更新") {
-                    Toggle(isOn: Binding(
-                        get: { model.autoLaunch },
-                        set: { enable in
-                            // 乐观更新：立即切换开关外观，后台执行后以真实状态校准
-                            model.autoLaunch = enable
-                            applyAutoLaunch(enable)
-                        }
-                    )) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text("开机自启").font(.system(size: 13))
-                            Text("登录时自动启动（brew services / LaunchAgent）")
-                                .font(.system(size: 11)).foregroundStyle(.secondary)
-                        }
+                Section("运行方式") {
+                    HStack(spacing: 6) {
+                        Image(systemName: "power.circle")
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                        Text("当前：\(model.runMode)")
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
                     }
-                    .toggleStyle(.switch).controlSize(.small)
+                    commandRow("单次运行（本次启动，不开机自启）",
+                               "brew services run soda-lyrics")
+                    commandRow("开机自启（登录自动运行，崩溃自动拉起）",
+                               "brew services start soda-lyrics")
+                    Text("停止：brew services stop soda-lyrics · 状态：brew services info soda-lyrics")
+                        .font(.system(size: 11)).foregroundStyle(.tertiary)
+                }
 
+                Section("启动与更新") {
                     Toggle(isOn: Binding(
                         get: { UserDefaults.standard.bool(forKey: "sodaAutoUpdate") },
                         set: { UserDefaults.standard.set($0, forKey: "sodaAutoUpdate") }
@@ -75,6 +72,7 @@ struct SettingsView: View {
                         Text("brew upgrade zephyr-cheung/tap/soda-lyrics")
                             .font(.system(size: 11, design: .monospaced))
                             .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
                         Button("立即更新（brew upgrade + 重启服务）") {
                             applyUpdate()
                         }
@@ -93,6 +91,8 @@ struct SettingsView: View {
                             .buttonStyle(.bordered).controlSize(.small)
                     }
                     Text("© 2026 zephyr-cheung")
+                        .font(.system(size: 11)).foregroundStyle(.tertiary)
+                    Text("苏打歌词")
                         .font(.system(size: 11)).foregroundStyle(.tertiary)
                     Text("汽水音乐 & Apple Music 状态栏歌词")
                         .font(.system(size: 11)).foregroundStyle(.tertiary)
@@ -115,14 +115,51 @@ struct SettingsView: View {
         .padding(12)
         .frame(width: 360, height: 420)
         .onAppear {
-            // 异步查询自启状态（brew services list 同步会阻塞面板弹出）
-            DispatchQueue.global().async {
-                let active = self.isAutoLaunchActive()
-                DispatchQueue.main.async {
-                    self.model.autoLaunch = active
-                }
+            DispatchQueue.global().async { [self] in
+                let info = detectRunMode()
+                DispatchQueue.main.async { model.runMode = info }
             }
         }
+    }
+
+    /// 检测当前运行方式：开机自启的判定依据是 plist 是否写入用户 LaunchAgents
+    /// （只有 `brew services start` 会写；`run` 仅用 opt 模板加载一次，不注册自启）
+    private func detectRunMode() -> String {
+        let agentPlist = NSString(string: "~/Library/LaunchAgents/homebrew.mxcl.soda-lyrics.plist").expandingTildeInPath
+        if FileManager.default.fileExists(atPath: agentPlist) {
+            return "开机自启运行中（brew 服务，登录自动启动）"
+        }
+        if isServiceManaged {
+            return "单次运行中（brew services run，未注册开机自启）"
+        }
+        return "单次运行中（未注册开机自启）"
+    }
+
+    /// 命令 + 复制按钮
+    private func commandRow(_ title: String, _ command: String) -> some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Text(title).font(.system(size: 12)).foregroundStyle(.secondary)
+            HStack(spacing: 8) {
+                Text(command)
+                    .font(.system(size: 11, design: .monospaced))
+                    .textSelection(.enabled)
+                Spacer()
+                Button {
+                    copyText(command)
+                } label: {
+                    Label("复制", systemImage: "doc.on.doc")
+                        .font(.system(size: 10))
+                }
+                .buttonStyle(.bordered).controlSize(.mini)
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func copyText(_ s: String) {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(s, forType: .string)
     }
 
     private var header: some View {
@@ -175,12 +212,21 @@ struct SettingsView: View {
         if let u = URL(string: s) { NSWorkspace.shared.open(u) }
     }
 
-    /// 退出软件：若由 brew services 托管（KeepAlive 会在退出后立即拉回），先停服务再退出
+    // MARK: - 退出软件
+
+    /// 是否由 launchd（brew services）托管运行——被托管时退出后 KeepAlive 会立即拉回
+    private var isServiceManaged: Bool {
+        ProcessInfo.processInfo.environment["XPC_SERVICE_NAME"]?.contains("soda-lyrics") == true
+    }
+
+    /// 退出软件：服务托管时先停服务再退出（防 KeepAlive 拉回）
     private func quitApp() {
         let exit = { NSApplication.shared.terminate(nil) }
-        if isAutoLaunchActive() {
-            DispatchQueue.global().async {
-                self.applyAutoLaunchSync(false)
+        if isServiceManaged {
+            DispatchQueue.global().async { [self] in
+                if let brew = brewPath {
+                    _ = runOutput(brew, ["services", "stop", "soda-lyrics"])
+                }
                 Thread.sleep(forTimeInterval: 1.0)   // 等待 launchd 卸载完成
                 DispatchQueue.main.async { exit() }
             }
@@ -189,70 +235,12 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - 开机自启
+    // MARK: - 工具
 
     private var brewPath: String? {
         ["/opt/homebrew/bin/brew", "/usr/local/bin/brew"].first {
             FileManager.default.isExecutableFile(atPath: $0)
         }
-    }
-
-    private var agentPlist: String {
-        NSString(string: "~/Library/LaunchAgents/com.zephyr.sodalryrics.plist").expandingTildeInPath
-    }
-
-    /// 当前是否已注册开机自启（brew services started 或自管 plist 存在）
-    private func isAutoLaunchActive() -> Bool {
-        if let brew = brewPath,
-           let out = runOutput(brew, ["services", "list"]),
-           let line = out.split(separator: "\n").first(where: { $0.contains("soda-lyrics") }),
-           line.contains("started") {
-            return true
-        }
-        return FileManager.default.fileExists(atPath: agentPlist) || FileManager.default.fileExists(
-            atPath: NSString(string: "~/Library/LaunchAgents/homebrew.mxcl.soda-lyrics.plist").expandingTildeInPath)
-    }
-
-    private func applyAutoLaunch(_ enable: Bool) {
-        // 异步执行（brew services/launchctl 阻塞主线程会令 UI 无响应）
-        DispatchQueue.global().async {
-            self.applyAutoLaunchSync(enable)
-            DispatchQueue.main.async {
-                self.model.autoLaunch = self.isAutoLaunchActive()
-            }
-        }
-    }
-
-    private func applyAutoLaunchSync(_ enable: Bool) {
-        if let brew = brewPath {
-            _ = runTool(brew, ["services", enable ? "start" : "stop", "soda-lyrics"])
-        } else if enable {
-            // 自管 LaunchAgent（无 brew 环境兜底）
-            let plist = """
-            <?xml version="1.0" encoding="UTF-8"?>
-            <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-            <plist version="1.0"><dict>
-            <key>Label</key><string>com.zephyr.sodalryrics</string>
-            <key>ProgramArguments</key><array><string>\(Bundle.main.executablePath ?? "")</string></array>
-            <key>RunAtLoad</key><true/>
-            <key>KeepAlive</key><true/>
-            </dict></plist>
-            """
-            do {
-                try plist.write(toFile: agentPlist, atomically: true, encoding: .utf8)
-                _ = runTool("/bin/launchctl", ["load", "-w", agentPlist])
-            } catch {}
-        } else {
-            if FileManager.default.fileExists(atPath: agentPlist) {
-                _ = runTool("/bin/launchctl", ["unload", agentPlist])
-                try? FileManager.default.removeItem(atPath: agentPlist)
-            }
-        }
-        model.autoLaunch = isAutoLaunchActive()
-    }
-
-    private func runTool(_ tool: String, _ args: [String]) -> Bool {
-        runOutput(tool, args) != nil
     }
 
     private func runOutput(_ tool: String, _ args: [String]) -> String? {
@@ -267,7 +255,6 @@ struct SettingsView: View {
         p.standardError = FileHandle.nullDevice
         do {
             try p.run()
-            // 超时保护（brew/launchctl 异常卡住时 12s 强制终止，避免阻塞 UI/后台线程）
             for _ in 0..<120 {
                 if !p.isRunning { break }
                 Thread.sleep(forTimeInterval: 0.1)
@@ -283,19 +270,50 @@ struct SettingsView: View {
 
     private func checkForUpdates() {
         model.checkState = .checking
-        var req = URLRequest(url: URL(string: "https://api.github.com/repos/zephyr-cheung/soda-lyrics-mac/releases/latest")!)
-        req.setValue("SodaLyrics/\(AppInfo.version)", forHTTPHeaderField: "User-Agent")
-        URLSession(configuration: updateURLSessionConfiguration()).dataTask(with: req) { data, _, error in
+        Self.fetchLatestVersion { tag in
             DispatchQueue.main.async {
-                guard let data, error == nil,
-                      let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-                      let tag = obj["tag_name"] as? String else {
-                    model.checkState = .failed("网络或接口异常")
+                guard let tag else {
+                    model.checkState = .failed("网络或接口异常（大陆网络可尝试开启代理后重试）")
                     return
                 }
                 model.checkState = versionNewer(tag, than: AppInfo.version) ? .found(tag) : .upToDate
             }
-        }.resume()
+        }
+    }
+
+    /// 多源获取最新版本（大陆网络兼容）：
+    /// 1) GitHub Releases API（配自动代理探测）
+    /// 2) jsDelivr CDN 拉取仓库根 VERSION 文件（大陆可达性好）
+    static func fetchLatestVersion(_ completion: @escaping (String?) -> Void) {
+        let session = URLSession(configuration: updateURLSessionConfiguration())
+        let sources: [(URL, (String) -> String?)] = [
+            (URL(string: "https://api.github.com/repos/zephyr-cheung/soda-lyrics-mac/releases/latest")!, { raw in
+                guard let obj = (try? JSONSerialization.jsonObject(with: Data(raw.utf8))) as? [String: Any],
+                      let tag = obj["tag_name"] as? String else { return nil }
+                return tag
+            }),
+            (URL(string: "https://cdn.jsdelivr.net/gh/zephyr-cheung/soda-lyrics-mac@main/VERSION")!, { raw in
+                let v = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                return v.isEmpty ? nil : v
+            }),
+        ]
+        var index = 0
+        func tryNext() {
+            guard index < sources.count else { completion(nil); return }
+            let (url, parse) = sources[index]
+            index += 1
+            var req = URLRequest(url: url)
+            req.setValue("SodaLyrics/\(AppInfo.version)", forHTTPHeaderField: "User-Agent")
+            req.timeoutInterval = 12
+            session.dataTask(with: req) { data, _, _ in
+                guard let data, let raw = String(data: data, encoding: .utf8), let tag = parse(raw) else {
+                    tryNext()
+                    return
+                }
+                completion(tag)
+            }.resume()
+        }
+        tryNext()
     }
 
     private func versionNewer(_ tag: String, than current: String) -> Bool {
@@ -317,7 +335,7 @@ struct SettingsView: View {
             return
         }
         model.updating = true
-        DispatchQueue.global().async {
+        DispatchQueue.global().async { [self] in
             _ = runOutput(brew, ["upgrade", "zephyr-cheung/tap/soda-lyrics"])
             _ = runOutput(brew, ["services", "restart", "soda-lyrics"])
             DispatchQueue.main.async {
@@ -409,12 +427,8 @@ func detectProxyDictionary() -> [AnyHashable: Any]? {
 func AutoUpdateCheckOnLaunch() {
     guard UserDefaults.standard.bool(forKey: "sodaAutoUpdate") else { return }
     DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
-        var req = URLRequest(url: URL(string: "https://api.github.com/repos/zephyr-cheung/soda-lyrics-mac/releases/latest")!)
-        req.setValue("SodaLyrics/\(AppInfo.version)", forHTTPHeaderField: "User-Agent")
-        URLSession(configuration: updateURLSessionConfiguration()).dataTask(with: req) { data, _, _ in
-            guard let data,
-                  let obj = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any],
-                  let tag = obj["tag_name"] as? String else { return }
+        SettingsView.fetchLatestVersion { tag in
+            guard let tag else { return }
             let a = tag.trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
                 .components(separatedBy: ".").compactMap(Int.init)
             let b = AppInfo.version.components(separatedBy: ".").compactMap(Int.init)
@@ -429,6 +443,6 @@ func AutoUpdateCheckOnLaunch() {
                     NowPlayingStore.log("auto-update: 发现新版本 \(tag)")
                 }
             }
-        }.resume()
+        }
     }
 }

@@ -64,7 +64,7 @@ struct LyricsPanel: View {
         HStack(alignment: .top, spacing: 10) {
             coverArt
             VStack(alignment: .leading, spacing: 6) {
-                Text(store.now.title.isEmpty ? "汽水歌词助手" : store.now.title)
+                Text(store.now.title.isEmpty ? "苏打歌词" : store.now.title)
                     .font(.system(size: 15, weight: .semibold))
                     .lineLimit(1)
                 Text(store.now.artist.isEmpty ? (store.lyricCredit.isEmpty ? "正在监听汽水音乐…" : store.lyricCredit) : store.now.artist)
@@ -184,7 +184,7 @@ struct LyricsPanel: View {
         case .noPermission:
             hint("需要辅助功能权限才能读取播放状态", detail: "打开 系统设置 → 隐私与安全性 → 辅助功能，勾选本 App")
         case .appMissing:
-            hint("未检测到汽水音乐", detail: "请先打开 汽水音乐 App 并播放歌曲")
+            hint("未检测到播放器", detail: "请先打开并播放 汽水音乐 或 Apple Music")
         case .noResult:
             hint("未找到这首歌的歌词", detail: store.now.title + " - " + store.now.artist)
         case .error:
@@ -201,7 +201,7 @@ struct LyricsPanel: View {
             .frame(maxWidth: .infinity)
         default:
             if store.lines.isEmpty {
-                hint("等待播放…", detail: "在汽水音乐中播放歌曲后，这里会显示滚动歌词")
+                hint("等待播放…", detail: "在汽水音乐或 Apple Music 中播放歌曲后，这里会显示滚动歌词")
             } else {
                 LyricListView(lines: store.lines, currentIndex: store.currentIndex, ticker: ticker)
             }
