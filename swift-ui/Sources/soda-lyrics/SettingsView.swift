@@ -4,7 +4,7 @@ import SodaLyrics
 
 /// 应用信息（当前版本：发版时同步）
 enum AppInfo {
-    static let version = "0.3.3"
+    static let version = "0.3.4"
     static let repo = "https://github.com/zephyr-cheung/soda-lyrics-mac"
     static let author = "https://github.com/zephyr-cheung"
 }
@@ -19,10 +19,85 @@ struct SettingsView: View {
         @Published var checkState: Check = .idle
         @Published var updating = false
         @Published var runMode = "检测中…"
+        /// 拖动中的宽度预览值（nil = 未拖动，显示实际值）
+        @Published var draggingWidth: CGFloat?
         enum Check: Equatable { case idle, checking, upToDate, found(String), failed(String) }
     }
 
     @ObservedObject private var model = Model.shared
+
+    /// 当前状态栏歌词宽度（AppDelegate 实时值）
+    private var currentBarWidth: CGFloat {
+        AppDelegate.current?.barWidthValue ?? 260
+    }
+
+    /// 可选状态栏字体（显示名, postscript 名；"" = 系统菜单栏字体）——全部 macOS 自带
+    private var fontChoices: [(String, String)] {
+        [
+            ("系统菜单栏字体", ""),
+            // 苹方（PingFang SC）全字重
+            ("苹方-简 常规", "PingFangSC-Regular"),
+            ("苹方-简 中黑", "PingFangSC-Medium"),
+            ("苹方-简 中粗", "PingFangSC-Semibold"),
+            ("苹方-简 细体", "PingFangSC-Light"),
+            ("苹方-简 极细", "PingFangSC-Thin"),
+            ("苹方-简 特细", "PingFangSC-Ultralight"),
+            // 中文字体（postscript 名已逐一校验有效）
+            ("黑体-简 常规", "STHeitiSC-Light"),
+            ("黑体-简 中黑", "STHeitiSC-Medium"),
+            ("宋体-简 常规", "STSongti-SC-Regular"),
+            ("宋体-简 粗体", "STSongti-SC-Bold"),
+            ("宋体-简 细体", "STSongti-SC-Light"),
+            ("宋体-简 黑体", "STSongti-SC-Black"),
+            ("楷体-简 常规", "STKaitiSC-Regular"),
+            ("楷体-简 粗体", "STKaitiSC-Bold"),
+            ("楷体-简 特粗", "STKaitiSC-Black"),
+            ("圆体-简 常规", "STYuanti-SC-Regular"),
+            ("圆体-简 细体", "STYuanti-SC-Light"),
+            ("圆体-简 粗体", "STYuanti-SC-Bold"),
+            ("华文仿宋", "STFangsong"),
+            // 华文字库
+            ("华文细黑", "STXihei"),
+            ("华文宋体", "STSong"),
+            ("华文楷体", "STKaiti"),
+            ("华文黑体", "STHeitiSC-Medium"),
+            // 西文无衬线
+            ("Helvetica Neue 常规", "HelveticaNeue"),
+            ("Helvetica Neue 细体", "HelveticaNeue-Light"),
+            ("Helvetica Neue 中黑", "HelveticaNeue-Medium"),
+            ("Arial", "ArialMT"),
+            ("Arial 粗体", "Arial-BoldMT"),
+            ("Verdana", "Verdana"),
+            ("Trebuchet MS", "TrebuchetMS"),
+            ("Optima", "Optima-Regular"),
+            ("Gill Sans", "GillSans"),
+            ("Futura", "Futura-Medium"),
+            // 西文衬线
+            ("Times New Roman", "TimesNewRomanPSMT"),
+            ("Georgia", "Georgia"),
+            ("Palatino", "Palatino-Roman"),
+            ("Baskerville", "Baskerville"),
+            ("Didot", "Didot"),
+            ("Copperplate", "Copperplate"),
+            ("American Typewriter", "AmericanTypewriter"),
+            // 等宽
+            ("Menlo", "Menlo-Regular"),
+            ("Monaco", "Monaco"),
+            ("Courier New", "CourierNewPSMT"),
+            // 手写/装饰
+            ("Marker Felt", "MarkerFelt-Thin"),
+            ("Snell Roundhand", "SnellRoundhand"),
+            ("Zapfino", "Zapfino"),
+        ]
+    }
+
+    private var currentFontName: String {
+        AppDelegate.current?.barFontNameValue ?? ""
+    }
+
+    private var currentFontSize: CGFloat {
+        AppDelegate.current?.barFontSizeValue ?? 13
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -42,6 +117,60 @@ struct SettingsView: View {
                                "brew services start soda-lyrics")
                     Text("停止：brew services stop soda-lyrics · 状态：brew services info soda-lyrics")
                         .font(.system(size: 11)).foregroundStyle(.tertiary)
+                }
+
+                Section("状态栏") {
+                    HStack(spacing: 10) {
+                        Text("歌词宽度")
+                            .font(.system(size: 13))
+                            .font(.system(size: 13))
+                        Slider(value: Binding(
+                            get: { model.draggingWidth ?? currentBarWidth },
+                            set: { model.draggingWidth = $0 }   // 拖动中仅预览，不触碰 statusItem
+                        ), in: 140...440, step: 10,
+                        onEditingChanged: { editing in
+                            if editing {
+                                model.draggingWidth = currentBarWidth
+                            } else if let w = model.draggingWidth {
+                                // 拖完一次性应用：避免 statusItem 宽度连续变化带动 popover 重定位
+                                AppDelegate.current?.setBarWidth(w)
+                                model.draggingWidth = nil
+                            }
+                        })
+                        Text("\(Int(model.draggingWidth ?? currentBarWidth)) pt")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 48, alignment: .trailing)
+                    }
+
+                    Picker("歌词字体", selection: Binding(
+                        get: { currentFontName },
+                        set: { name in
+                            AppDelegate.current?.setBarFont(name: name, size: currentFontSize)
+                        }
+                    )) {
+                        ForEach(fontChoices, id: \.1) { choice in
+                            Text(choice.0).tag(choice.1)
+                        }
+                    }
+                    .pickerStyle(.menu)
+                    .font(.system(size: 13))
+
+                    HStack(spacing: 10) {
+                        Text("字号")
+                            .font(.system(size: 13))
+                        Slider(value: Binding(
+                            get: { currentFontSize },
+                            set: { size in
+                                // 字号不触碰 statusItem 宽度，实时应用安全（无 popover 位移）
+                                AppDelegate.current?.setBarFont(name: currentFontName ?? "", size: size)
+                            }
+                        ), in: 10...15, step: 1)
+                        Text("\(Int(currentFontSize))")
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 48, alignment: .trailing)
+                    }
                 }
 
                 Section("启动与更新") {

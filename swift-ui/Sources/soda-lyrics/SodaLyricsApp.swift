@@ -5,6 +5,8 @@ import SodaLyrics
 /// 自绘 NSStatusItem 菜单栏：位图缓存 + CALayer contentsRect 平移（60fps 跑马，零逐帧重绘）
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    /// 供设置面板调节状态栏宽度等
+    static weak var current: AppDelegate?
     private var statusItem: NSStatusItem!
     private var popover: NSPopover!
     private let store = NowPlayingStore()
@@ -18,7 +20,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var cachedBitmap: NSImage?
     private var bitmapSpan: CGFloat = 1
 
-    private let maxWidth: CGFloat = 260
+    /// 状态栏歌词视窗宽度（设置面板可拖动调节，UserDefaults 持久化）
+    private var barWidth: CGFloat = 260
     private let height: CGFloat = 20
     private let defaultSpeed: CGFloat = 30    // 默认跑马速度 pt/s（句末/间隙）
     private let minSpeed: CGFloat = 12        // 防超长句停滞
@@ -30,14 +33,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var layerDirty = false
     /// 当前句的恒定跑马速度（pt/s，换句时按行总时长重算）
     private var marqueeStepPerSec: CGFloat = 30
-    private let font = NSFont.menuBarFont(ofSize: 13)
+    /// 状态栏字体（设置面板可调：字体名 nil=系统菜单栏字体；字号 10~15）
+    private var barFontName: String?
+    private var barFontSize: CGFloat = 13
+
+    private var barFont: NSFont {
+        if let n = barFontName, let f = NSFont(name: n, size: barFontSize) { return f }
+        return NSFont.menuBarFont(ofSize: barFontSize)
+    }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        Self.current = self
+        let saved = UserDefaults.standard.double(forKey: "sodaBarWidth")
+        if saved >= 120 { barWidth = CGFloat(saved) }
+        let savedSize = UserDefaults.standard.double(forKey: "sodaBarFontSize")
+        if savedSize >= 10 && savedSize <= 15 { barFontSize = CGFloat(savedSize) }
+        let savedName = (UserDefaults.standard.string(forKey: "sodaBarFont") ?? "").trimmingCharacters(in: .whitespaces)
+        barFontName = savedName.isEmpty ? nil : savedName
         store.start()
 
         // 固定长度 = 跑马视窗宽：layer 方案不再设置 button.image，
         // variableLength 无内容时宽度会塌缩成不可见的空白
-        statusItem = NSStatusBar.system.statusItem(withLength: 260)
+        statusItem = NSStatusBar.system.statusItem(withLength: barWidth)
         statusItem.button?.target = self
         statusItem.button?.action = #selector(togglePopover)
         // layer 化：滚动走 contentsRect（GPU），不再每帧重绘位图
@@ -73,14 +90,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let text = store.barText
-        let attrs: [NSAttributedString.Key: Any] = [.font: font, .foregroundColor: NSColor.labelColor]
+        let attrs: [NSAttributedString.Key: Any] = [.font: barFont, .foregroundColor: NSColor.labelColor]
 
         if text != lastText {
             lastText = text
             textWidth = (text as NSString).size(withAttributes: attrs).width
             marqueeOffset = 0
             marqueeStepPerSec = defaultSpeed
-            if textWidth > maxWidth {
+            if textWidth > barWidth {
                 let span = textWidth + 80
                 // 换句时按「整圈行程 / 行总时长」固定圈速：整句匀速滚完一圈，句内不变速
                 if let idx = store.currentIndex, idx < store.lines.count {
@@ -91,14 +108,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             // 一次性渲染整幅位图。滚动文本：左右各留 maxWidth 空白（contentsRect 全程合法，
             // 避免视窗越界导致的闪烁）；短文本：maxWidth 宽居中
-            let pad = textWidth > maxWidth ? maxWidth : 0
-            let bitmapW = textWidth > maxWidth ? textWidth + 80 + pad * 2 : maxWidth
+            let pad = textWidth > barWidth ? barWidth : 0
+            let bitmapW = textWidth > barWidth ? textWidth + 80 + pad * 2 : barWidth
             bitmapSpan = bitmapW
             let attrStr = NSAttributedString(string: text, attributes: attrs)
             let s = attrStr.size()
             let img = NSImage(size: NSSize(width: bitmapW, height: height))
             img.lockFocus()
-            let drawX = (textWidth > maxWidth) ? pad + (maxWidth - s.width) / 2 : (bitmapW - s.width) / 2
+            let drawX = (textWidth > barWidth) ? pad + (barWidth - s.width) / 2 : (bitmapW - s.width) / 2
             attrStr.draw(with: NSRect(x: drawX, y: (height - s.height) / 2, width: s.width, height: s.height), options: [.usesLineFragmentOrigin])
             img.unlockFocus()
             cachedBitmap = img
@@ -109,13 +126,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         guard let layer = statusItem.button?.layer else { return }
-        // 防御：系统可能重置 button 的 layer 内容，每帧确保位图在位（identity 比较）
-        if let cur = layer.contents as? NSImage, let cached = cachedBitmap, cur !== cached {
-            layer.contents = cached
-            layerDirty = true
+        // 防御：系统可能重置/清空 button 的 layer 内容（如打开 popover 瞬间），
+        // 每帧确保位图在位：contents 为 nil、非 NSImage 或非缓定位图一律恢复
+        if let cached = cachedBitmap {
+            let cur = layer.contents
+            let mismatched = cur == nil || (cur as? NSImage) !== cached
+            if mismatched {
+                layer.contents = cached
+                layerDirty = true
+            }
         }
         // 视窗更新：长文本滚动每帧；短文本仅位图/文本变化帧（静态关闭态零每帧层写）
-        if textWidth > maxWidth {
+        if textWidth > barWidth {
             let span = textWidth + 80
             marqueeOffset += marqueeStepPerSec * dt
             if marqueeOffset > span {
@@ -127,13 +149,39 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             }
             // 视窗 = 位图 [offset, offset + maxWidth]，恒在 [0, totalW] 内；offset=0 时视窗落在
             // 左侧空白区（与原「初始全空、文本右缘滑入」视觉一致）
-            layer.contentsRect = CGRect(x: marqueeOffset / bitmapSpan, y: 0, width: maxWidth / bitmapSpan, height: 1)
+            layer.contentsRect = CGRect(x: marqueeOffset / bitmapSpan, y: 0, width: barWidth / bitmapSpan, height: 1)
             layerDirty = false
         } else if layerDirty {
             layer.contentsRect = CGRect(x: 0, y: 0, width: 1, height: 1)
             layerDirty = false
         }
         statusItem.button?.toolTip = text
+    }
+
+    /// 当前状态栏歌词宽度（设置面板读取）
+    var barWidthValue: CGFloat { barWidth }
+
+    /// 当前状态栏字体设置（设置面板读取）
+    var barFontNameValue: String? { barFontName }
+    var barFontSizeValue: CGFloat { barFontSize }
+
+    /// 设置状态栏字体与字号（立即重绘位图）
+    func setBarFont(name: String?, size: CGFloat) {
+        let trimmed = (name ?? "").trimmingCharacters(in: .whitespaces)
+        barFontName = trimmed.isEmpty ? nil : trimmed
+        barFontSize = min(max(size, 10), 15)
+        UserDefaults.standard.set(trimmed, forKey: "sodaBarFont")
+        UserDefaults.standard.set(Double(barFontSize), forKey: "sodaBarFontSize")
+        lastText = ""          // 触发下一帧位图重建（字体变化）
+    }
+
+    /// 调节状态栏歌词宽度（设置面板拖动）：持久化 + 立即生效（强制重建位图）
+    func setBarWidth(_ w: CGFloat) {
+        let clamped = min(max(w, 140), 440)
+        barWidth = clamped
+        UserDefaults.standard.set(Double(clamped), forKey: "sodaBarWidth")
+        statusItem.length = clamped
+        lastText = ""          // 触发下一帧位图重建（宽度变化影响布局）
     }
 
     @objc private func togglePopover() {

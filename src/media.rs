@@ -255,13 +255,14 @@ impl Collector {
 
         // 2) 进度：真实优先
         //    a) elC = now - CurrentPlaybackDate（汽水，系统口径精确）
-        //    b) Apple Music：ElapsedTime 快照 + Timestamp 推算 = elapsed + (now - ts) * rate
-        //       （播放中 dict 不刷新，但 ts 时刻已知，推算无漂移）
+        //    b) Apple Music（adamID>0）：ElapsedTime 快照 + Timestamp 推算 = elapsed + (now - ts) * rate
+        //       （播放中 dict 不刷新，但 ts 时刻已知，推算无漂移；
+        //         汽水也有 ElapsedTime/Timestamp 键，但其 elC 短暂缺失时不能走此分支——会跳到快照值）
         //    c) 兜底增量推进（暂停冻结）
         if self.playing && self.have_song {
             if row_elc >= 0.0 {
                 self.pos = row_elc;
-            } else if row_elapsed >= 0.0 && row_ts > 0.0 {
+            } else if row_adam > 0 && row_elapsed >= 0.0 && row_ts > 0.0 {
                 let epoch_ms = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()

@@ -14,7 +14,7 @@
 1. **Swift UI**（`swift-ui/`，SwiftPM + AppKit）
    - `SodaLyricsApp.swift`：AppDelegate、NSStatusItem 自绘跑马灯（位图缓存 + CALayer contentsRect GPU 平移，60fps Timer；避开 SwiftUI TimelineView 饿死 runloop 的坑）。面板 30fps 刷新由本类按 popover 可见性节流驱动（关闭时零开销）
    - `LyricsPanel.swift`：NSPopover 面板——封面/歌名/歌手/进度条 + 歌词列表（当前行高亮、词级染色带淡入、spring 自动滚动、候选切换、右上角 ⚙️ 齿轮切设置页）
-   - `SettingsView.swift`：设置面板——运行方式指引（`brew services run` 单次 / `start` 开机自启，仅展示命令不代执行）、更新检测 / 自动更新（GitHub Releases API + 自动代理探测）、开源地址 / 作者 / MIT、退出软件（服务托管时先停服务再退出）
+   - `SettingsView.swift`：设置面板——运行方式指引（`brew services run` 单次 / `start` 开机自启，仅展示命令不代执行）、更新检测 / 自动更新（GitHub Releases API + 自动代理探测）、**状态栏宽度拖动（延迟应用到松手，避免 popover 锚点重定位）与字体/字号**、开源地址 / 作者 / MIT、退出软件（服务托管时先停服务再退出）
    - `PipelineStore.swift`（库）：spawn Rust core，读 stdout JSONL 行 → @Published 状态
 2. **Rust core**（`src/`，`cargo build --release`）
    - `main.rs`：主循环——播放器白名单路由（Soda/Apple）→ 状态合并 → 100ms 快照 JSONL；换歌时发全量歌词
@@ -46,7 +46,7 @@
 1. **MediaRemote 只对解释器类进程返回数据**：perl/python 可以，Rust/ObjC CLI 一律 null（已用 dlopen flags/签名/直接链接全矩阵验证）。**采集必须经由解释器代理**（当前 python）——不要尝试把采集搬到 Rust 直连。
    - **2026-08 补充：mediaremoted 对客户端有来源校验**——仅 **Apple 签名**的解释器返回数据：`/usr/bin/python3` ✓；**Homebrew 的 python（无 Apple 签名）实测一律 null**。`media.rs::locate_python()` 必须优先 `/usr/bin/python3`；formula **不得**注入 `SODA_PYTHON` 指向 brew python。
 2. **真实进度 = 当前墙钟 − CurrentPlaybackDate**：汽水音乐不上报 `ElapsedTime`（恒 0），但 dict 里有 `CurrentPlaybackDate`（曲目起点）。用这个公式，不要自推进（自推进曾导致误差/乱跳）。
-3. **elapsed 恒 0 的原因**：Electron 播放器不向系统更新该键。此前所有「自推进/增量推进/1s 偏移」方案均已废弃——直接信任 elC。
+3. **汽水进度用 elC（cpd）**：早期 Electron 不上报 ElapsedTime（恒 0）故废弃自推进方案；**实测现代汽水 dict 也会上报 ElapsedTime/Timestamp（有效值）**，但它们**绝不可作为进度源**——外推分支已用 `row_adam > 0` 限定为 Apple Music 专属，汽水 elC 短暂缺失时回退自推进兜底（勿把外推条件放宽到汽水）。
 4. **dylib 必须 ad-hoc 签名**：macOS 未签名 dylib 被解释器进程加载时直接杀进程（exit 137）。重建必须跑 `scripts/build-plugin.sh`（含 codesign）。
 5. **python 输出必须无缓冲**：spawn 用 `python3 -u`；perl 方案需 `$|=1`（perl 在 core spawn 场景未打通，勿回退 perl）。
 6. **播放器路由（双平台）**：`provider_for(app_id)`——`com.soda.music` → Soda（volcengine）；`com.apple.Music` → Apple 多源引擎；**Apple 判定依据**：now-playing dict 的 `kMRMediaRemoteNowPlayingInfoiTunesStoreIdentifier`（adam id）> 0（MediaRemote 的 dict 不含 bundle id，`GetNowPlayingApplicationPid` 符号不存在、`DisplayName` 需 MROrigin——勿再走这些路）；app_id 空保持现状 / 其他 App 清空（防抖：仅清一次）。
@@ -66,7 +66,11 @@
   - `brew services`/`launchctl` 调用必须**后台线程**执行（同步会阻塞主线程/面板弹出），且加超时保护（12s terminate）。
   - **不要在设置页做「开机自启开关」**：被 brew services 托管时 stop 服务会直接杀死当前进程（曾踩坑「关自启=软件退出」）；正确做法是只展示 `brew services run/start` 命令让用户手动执行。
   - 「退出软件」先停服务再退出：brew services `KeepAlive=true` 会在退出后立即拉回进程（`XPC_SERVICE_NAME` 判定是否托管）。
-  - 版本号在 `SettingsView.swift` 的 `AppInfo.version` 维护（发版时同步）。
+  - **状态栏宽度调节**：拖动中**不要实时改 `statusItem.length`**——popover 锚定在其上，宽度连续变化会被 AppKit 反复重定位（左右/上下平移，逐帧 setFrameOrigin 也压不住）→ 正确做法：拖动中仅本地预览（`model.draggingWidth`），`onEditingChanged(false)` 时一次性应用。
+  - **字体列表**：中文系统字体的 postscript 名与直觉不同且各代 macOS 有差异——`HeitiSC-*`/`SongtiSC-*`/`KaitiSC-*`/`YuantiSC-*` 均**不存在**（NSFont(name:) 返回 nil 静默回退系统字体=“切换没效果”）；正确名：黑体 `STHeitiSC-*`、宋体 `STSongti-SC-*`、楷体 `STKaitiSC-*`、圆体 `STYuanti-SC-*`、苹方 `PingFangSC-*`（含 Ultralight）、华文系 `STXihei/STSong/STKaiti/STFangsong`；新增字体前必须用 `NSFont(name:)` 逐一校验（可用 swift 脚本枚举 `NSFontManager.availableFonts`）。
+  - **状态栏位图防御**：打开 popover 瞬间 AppKit 会重置 statusItem 的 layer contents（可能是 nil 或其他对象）——防御分支必须**无条件恢复**（`contents == nil || (contents as? NSImage) !== cachedBitmap` → 恢复），只比较 NSImage identity 会在别的类型时漏恢复。
+  - **面板打开不滚到当前行**：`currentIndex` 由 snap 每 100ms 实时更新，滚动只挂 `onChange` 会漏掉“打开瞬间无变化”的场景 → `LyricListView.onAppear` 需主动 `scrollTo(currentIndex, anchor: .center)`（async 等布局完成后）。
+  - 版本号在 `SettingsView.swift` 的 `AppInfo.version` 维护（发版时同步：`git tag vX.Y.Z` → tarball sha256 → formula → tap；`VERSION` 文件同样要更新，jsDelivr CDN 更新检查依赖它）。
 
 ## 开发命令
 

@@ -267,6 +267,15 @@ private struct LyricListView: View {
                     }
                 }
             }
+            .onAppear {
+                // popover 打开瞬间立即回到当前行：currentIndex 由 snap 实时更新，
+                // 打开时无「变化」事件 → onChange 不触发 → 必须主动滚一次
+                DispatchQueue.main.async {
+                    if let idx = currentIndex {
+                        proxy.scrollTo(idx, anchor: .center)
+                    }
+                }
+            }
         }
     }
 

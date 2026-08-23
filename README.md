@@ -68,7 +68,7 @@ brew services start soda-lyrics    # ② 开机自启（登录自动运行，崩
 - **真实进度**：汽水走 `elC = 墙钟 − CurrentPlaybackDate`；Apple Music 无 cpd 但有 ElapsedTime + Timestamp → `elapsed + (now − ts) × rate` 实时推算，均精确同步（暂停/切歌自然正确）
 - **免登录歌词**：汽水直连 volcengine（搜索 + 词级歌词）；Apple Music 用**多源并发引擎**（LRCLIB / Kugou / QQ / 网易 / Kuwo / AMLL / Migu / Musixmatch / volcengine），打分匹配（Levenshtein + 繁简归一 + 时长差）后**词级优先**渲染
 - **词级时间戳**：统一解析 YRC / QRC / TTML / Enhanced LRC / 词级 LRC（均分降级）→ 卡拉OK逐字染色数据源
-- **设置面板**：展开面板右上角 ⚙️ 齿轮入口——运行方式指引（**单次运行 / 开机自启** brew 命令）、更新检测与自动更新（**自动探测代理**）、开源地址 / 作者 / MIT、一键退出（服务托管时先停服务防 KeepAlive 拉回）
+- **设置面板**：展开面板右上角 ⚙️ 齿轮入口——运行方式指引（**单次运行 / 开机自启** brew 命令）、更新检测与自动更新（**自动探测代理**）、**状态栏歌词宽度拖动调节与字体/字号选择**（46 款系统字体）、开源地址 / 作者 / MIT、一键退出（服务托管时先停服务防 KeepAlive 拉回）
 
 ## 目录结构
 
