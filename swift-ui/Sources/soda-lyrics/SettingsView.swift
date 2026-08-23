@@ -4,7 +4,7 @@ import SodaLyrics
 
 /// 应用信息（当前版本：发版时同步）
 enum AppInfo {
-    static let version = "0.3.4"
+    static let version = "0.3.5"
     static let repo = "https://github.com/zephyr-cheung/soda-lyrics-mac"
     static let author = "https://github.com/zephyr-cheung"
 }
@@ -29,6 +29,56 @@ struct SettingsView: View {
     /// 当前状态栏歌词宽度（AppDelegate 实时值）
     private var currentBarWidth: CGFloat {
         AppDelegate.current?.barWidthValue ?? 260
+    }
+
+    /// 单个颜色圆点（拆分出独立函数：内联组合会让编译器类型推断超时）
+    private func colorSwatch(_ color: NSColor?, selected: Bool) -> some View {
+        let fillColor = Color(nsColor: color ?? NSColor.labelColor)
+        let borderColor = Color(nsColor: selected ? NSColor.controlAccentColor : NSColor.separatorColor)
+        let width: CGFloat = selected ? 2.5 : 1
+        return Circle()
+            .fill(fillColor)
+            .frame(width: 16, height: 16)
+            .overlay(Circle().stroke(borderColor, lineWidth: width))
+    }
+
+    /// 预设色板（名称, 颜色；nil = 系统默认）
+    private var colorPresets: [(String, NSColor?)] {
+        [
+            ("默认", nil),
+            ("白色", .white),
+            ("红色", .systemRed),
+            ("橙色", .systemOrange),
+            ("黄色", .systemYellow),
+            ("绿色", .systemGreen),
+            ("青色", .systemTeal),
+            ("蓝色", .systemBlue),
+            ("紫色", .systemPurple),
+            ("粉色", .systemPink),
+            ("黑色", .black),
+        ]
+    }
+
+    private var rainbowOn: Bool {
+        UserDefaults.standard.bool(forKey: "sodaRainbow")
+    }
+
+    /// 颜色 hex（sRGB 解析；动态系统色按当前外观解析，保证与持久化 hex 可比）
+    private func hexOf(_ c: NSColor?) -> String? {
+        guard let c, let srgb = c.usingColorSpace(.sRGB) else { return nil }
+        return String(format: "%02X%02X%02X",
+                      Int(srgb.redComponent * 255), Int(srgb.greenComponent * 255), Int(srgb.blueComponent * 255))
+    }
+
+    private func isColorSelected(_ c: NSColor?) -> Bool {
+        // 用 hex 比较：重启后当前色是从 hex 重建的静态色，与预设动态系统色 isEqual 会失败
+        hexOf(AppDelegate.current?.barTextColorValue) == hexOf(c)
+    }
+
+    /// 应用颜色：非默认色自动关闭彩虹（二选一）；默认色保留当前彩虹状态
+    private func applyColorPreset(_ c: NSColor?) {
+        AppDelegate.current?.setBarColor(c)
+        if c != nil { AppDelegate.current?.setRainbowMode(false) }
     }
 
     /// 可选状态栏字体（显示名, postscript 名；"" = 系统菜单栏字体）——全部 macOS 自带
@@ -171,6 +221,36 @@ struct SettingsView: View {
                             .foregroundStyle(.secondary)
                             .frame(width: 48, alignment: .trailing)
                     }
+
+                    // 字体颜色（预设色板；与彩虹二选一）
+                    HStack(spacing: 6) {
+                        ForEach(colorPresets, id: \.0) { preset in
+                            Button {
+                                applyColorPreset(preset.1)
+                            } label: {
+                                colorSwatch(preset.1, selected: isColorSelected(preset.1))
+                            }
+                            .buttonStyle(.plain)
+                            .help(preset.0)
+                            .disabled(rainbowOn)
+                        }
+                    }
+                    Text(rainbowOn ? "彩虹渐变开启中，颜色不可用（二选一）" : "歌词颜色（选色会自动关闭彩虹）")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+
+                    Toggle(isOn: Binding(
+                        get: { rainbowOn },
+                        set: { on in
+                            AppDelegate.current?.setRainbowMode(on)
+                        }
+                    )) {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Text("彩虹渐变").font(.system(size: 13))
+                            Text("状态栏歌词按字符色相渐变（默认关闭）")
+                                .font(.system(size: 11)).foregroundStyle(.secondary)
+                        }
+                    }
+                    .toggleStyle(.switch).controlSize(.small)
                 }
 
                 Section("启动与更新") {

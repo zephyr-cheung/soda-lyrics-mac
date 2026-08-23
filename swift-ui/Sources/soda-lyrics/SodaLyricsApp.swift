@@ -50,6 +50,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         if savedSize >= 10 && savedSize <= 15 { barFontSize = CGFloat(savedSize) }
         let savedName = (UserDefaults.standard.string(forKey: "sodaBarFont") ?? "").trimmingCharacters(in: .whitespaces)
         barFontName = savedName.isEmpty ? nil : savedName
+        rainbowMode = UserDefaults.standard.bool(forKey: "sodaRainbow")
+        if let hex = UserDefaults.standard.string(forKey: "sodaBarColor"), hex.count == 6,
+           let r = Int(hex.prefix(2), radix: 16),
+           let g = Int(hex.dropFirst(2).prefix(2), radix: 16),
+           let b = Int(hex.dropFirst(4), radix: 16) {
+            barTextColor = NSColor(srgbRed: CGFloat(r) / 255.0, green: CGFloat(g) / 255.0, blue: CGFloat(b) / 255.0, alpha: 1.0)
+        }
         store.start()
 
         // 固定长度 = 跑马视窗宽：layer 方案不再设置 button.image，
@@ -90,7 +97,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
 
         let text = store.barText
-        let attrs: [NSAttributedString.Key: Any] = [.font: barFont, .foregroundColor: NSColor.labelColor]
+        let attrs: [NSAttributedString.Key: Any] = [.font: barFont, .foregroundColor: barTextColor ?? NSColor.labelColor]
 
         if text != lastText {
             lastText = text
@@ -116,7 +123,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let img = NSImage(size: NSSize(width: bitmapW, height: height))
             img.lockFocus()
             let drawX = (textWidth > barWidth) ? pad + (barWidth - s.width) / 2 : (bitmapW - s.width) / 2
-            attrStr.draw(with: NSRect(x: drawX, y: (height - s.height) / 2, width: s.width, height: s.height), options: [.usesLineFragmentOrigin])
+            if rainbowMode, !text.isEmpty {
+                // 彩虹渐变：按字符位置色相循环（浅色模式自动用深色亮度保证可读）
+                let darkBar = NSApp.effectiveAppearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua
+                let brightness: CGFloat = darkBar ? 0.95 : 0.32
+                var penX = drawX
+                let baselineY = (height - s.height) / 2
+                let count = max(text.count, 1)
+                for (i, ch) in text.enumerated() {
+                    let hue = CGFloat(i) / CGFloat(count - 1)
+                    let color = NSColor(hue: hue, saturation: 0.9, brightness: brightness, alpha: 1.0)
+                    let chStr = NSAttributedString(string: String(ch), attributes: [.font: barFont, .foregroundColor: color])
+                    let w = chStr.size().width
+                    chStr.draw(with: NSRect(x: penX, y: baselineY, width: w, height: s.height), options: [.usesLineFragmentOrigin])
+                    penX += w
+                }
+            } else {
+                attrStr.draw(with: NSRect(x: drawX, y: (height - s.height) / 2, width: s.width, height: s.height), options: [.usesLineFragmentOrigin])
+            }
             img.unlockFocus()
             cachedBitmap = img
             if let layer = statusItem.button?.layer {
@@ -161,9 +185,42 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     /// 当前状态栏歌词宽度（设置面板读取）
     var barWidthValue: CGFloat { barWidth }
 
+    /// 状态栏歌词自定义单色（nil = 系统默认；与彩虹二选一）
+    private var barTextColor: NSColor?
+
+    /// 状态栏歌词彩虹渐变模式（默认关闭，设置面板开关）
+    private var rainbowMode = false
+
     /// 当前状态栏字体设置（设置面板读取）
     var barFontNameValue: String? { barFontName }
     var barFontSizeValue: CGFloat { barFontSize }
+
+    /// 彩虹渐变开关：持久化 + 强制重建位图
+    var rainbowModeValue: Bool { rainbowMode }
+
+    func setRainbowMode(_ on: Bool) {
+        rainbowMode = on
+        UserDefaults.standard.set(on, forKey: "sodaRainbow")
+        lastText = ""          // 触发下一帧位图重建
+    }
+
+    /// 当前自定义颜色（设置面板读取；nil=默认）
+    var barTextColorValue: NSColor? { barTextColor }
+
+    /// 设置单色（nil=默认色；持久化 hex）：与彩虹互斥——设置面板保证选色时关彩虹
+    func setBarColor(_ c: NSColor?) {
+        barTextColor = c
+        if let c, let srgb = c.usingColorSpace(.sRGB) {
+            let hex = String(format: "%02X%02X%02X",
+                             Int(srgb.redComponent * 255),
+                             Int(srgb.greenComponent * 255),
+                             Int(srgb.blueComponent * 255))
+            UserDefaults.standard.set(hex, forKey: "sodaBarColor")
+        } else {
+            UserDefaults.standard.removeObject(forKey: "sodaBarColor")
+        }
+        lastText = ""
+    }
 
     /// 设置状态栏字体与字号（立即重绘位图）
     func setBarFont(name: String?, size: CGFloat) {
