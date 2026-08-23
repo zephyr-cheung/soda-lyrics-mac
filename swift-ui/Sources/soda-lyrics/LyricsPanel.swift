@@ -326,9 +326,26 @@ private struct CurrentLineView: View {
 
     var body: some View {
         let units = buildCharUnits(line)
-        if units.isEmpty { return AnyView(Text(line.text)) }
+        // 行级歌词（无词级时间戳）：整行高亮，不做逐字卡拉OK扫描
+        if units.isEmpty {
+            return AnyView(
+                Text(line.text)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
+            )
+        }
         let segs = buildSegments(units)
-        if segs.isEmpty { return AnyView(Text(line.text)) }
+        if segs.isEmpty {
+            return AnyView(
+                Text(line.text)
+                    .font(.system(size: 16, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .multilineTextAlignment(.center)
+                    .frame(maxWidth: .infinity)
+            )
+        }
         return AnyView(
             CharFlowLayout {
                 ForEach(Array(segs.enumerated()), id: \.offset) { _, s in

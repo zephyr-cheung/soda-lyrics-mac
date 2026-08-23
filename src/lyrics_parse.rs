@@ -79,14 +79,8 @@ fn parse_platform_or_lrc(raw: &str) -> Option<Vec<LyricLine>> {
         if !words.is_empty() {
             out.push(LyricLine { start_ms: *start, end_ms: e, text: text.trim().to_string(), words: words.clone() });
         } else {
-            // 行级文本 → 行内字符均分词级（保持逐字可用）
-            let chars: Vec<char> = text.chars().collect();
-            let n = chars.len().max(1);
-            let per = ((e - *start) / n as i64).max(1);
-            let words: Vec<Word> = chars.iter().enumerate()
-                .map(|(ci, ch)| Word { offset_ms: *start + ci as i64 * per, dur_ms: per, text: ch.to_string() })
-                .collect();
-            out.push(LyricLine { start_ms: *start, end_ms: e, text: text.trim().to_string(), words });
+            // 行级歌词（非词级）：不带 words → 面板当前行整行高亮（不做假逐字扫描）
+            out.push(LyricLine { start_ms: *start, end_ms: e, text: text.trim().to_string(), words: Vec::new() });
         }
     }
     if out.is_empty() { None } else { Some(out) }
@@ -228,14 +222,8 @@ pub fn parse_ttml(raw: &str) -> Option<Vec<LyricLine>> {
         }
         if plain.trim().is_empty() { rest = &rest[ps + 4..]; continue }
         if words.is_empty() {
-            // 行级退化
-            let chars: Vec<char> = plain.trim().chars().collect();
-            let n = chars.len().max(1);
-            let per = (((end - begin) * 1000.0) as i64 / n as i64).max(1);
-            let start_ms = (begin * 1000.0) as i64;
-            words = chars.iter().enumerate()
-                .map(|(ci, ch)| Word { offset_ms: start_ms + ci as i64 * per, dur_ms: per, text: ch.to_string() })
-                .collect();
+            // 行级退化：不带 words（面板整行高亮）
+            words = Vec::new();
         }
         out.push(LyricLine {
             start_ms: (begin * 1000.0) as i64,
