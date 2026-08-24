@@ -4,7 +4,7 @@ import SodaLyrics
 
 /// 应用信息（当前版本：发版时同步）
 enum AppInfo {
-    static let version = "0.3.5"
+    static let version = "0.3.6"
     static let repo = "https://github.com/zephyr-cheung/soda-lyrics-mac"
     static let author = "https://github.com/zephyr-cheung"
 }
@@ -464,13 +464,14 @@ struct SettingsView: View {
         p.standardError = FileHandle.nullDevice
         do {
             try p.run()
+            // 先消费管道再等退出（防管道缓冲死锁，同 cleanupOrphanProcesses）
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
             for _ in 0..<120 {
                 if !p.isRunning { break }
                 Thread.sleep(forTimeInterval: 0.1)
             }
             if p.isRunning { p.terminate() }
             p.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
             return String(data: data, encoding: .utf8)
         } catch { return nil }
     }

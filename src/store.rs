@@ -199,6 +199,9 @@ fn load_soda_lyrics(req: &LoadRequest) -> LyricsPayload {
             // 时长匹配：剔除与播放器总时长差异明显的候选（阈值 = 8% 或 5s 取大），
             // 保留的按时长差升序（最接近播放器时长的优先尝试）；
             // 全部被剔除时回退全量（播放器时长可能不准，避免误杀导致无歌词）。
+            // 归一化标题（比大小写/空白/标点）
+            let norm = |x: &str| x.chars().filter(|c| c.is_alphanumeric()).collect::<String>().to_lowercase();
+            let target = norm(&req.title);
             let (mut kept, rest): (Vec<&api::Track>, Vec<&api::Track>) = if req.player_dur_ms > 0.0 {
                 let allow = (req.player_dur_ms * 0.08).max(5000.0);
                 let mut k: Vec<&api::Track> = Vec::new();
@@ -208,9 +211,17 @@ fn load_soda_lyrics(req: &LoadRequest) -> LyricsPayload {
                 }
                 (k, r)
             } else {
-                (tracks.iter().collect(), Vec::new())
+                // 播放器时长缺失（dur=0）：时长过滤/排序不可靠 → 标题精确匹配优先，其余垫后
+                let mut k: Vec<&api::Track> = Vec::new();
+                let mut r: Vec<&api::Track> = Vec::new();
+                for t in &tracks {
+                    if norm(&t.title) == target { k.push(t) } else { r.push(t) }
+                }
+                (k, r)
             };
-            kept.sort_by_key(|t| (t.duration_ms as f64 - req.player_dur_ms).abs() as i64);
+            if req.player_dur_ms > 0.0 {
+                kept.sort_by_key(|t| (t.duration_ms as f64 - req.player_dur_ms).abs() as i64);
+            }
             let chosen: Vec<&api::Track> = if kept.is_empty() {
                 tracks.iter().collect()
             } else {

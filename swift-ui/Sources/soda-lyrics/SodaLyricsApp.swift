@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import SodaLyrics
+import Darwin
 
 /// 自绘 NSStatusItem 菜单栏：位图缓存 + CALayer contentsRect 平移（60fps 跑马，零逐帧重绘）
 @MainActor
@@ -42,7 +43,76 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         return NSFont.menuBarFont(ofSize: barFontSize)
     }
 
+    /// 单实例锁 fd（进程生命周期持有；崩溃/退出自动释放）
+    private static var lockFD: Int32 = -1
+
+    /// 获取单实例锁：已有实例运行时返回 false（调用方应退出）
+    @discardableResult
+    static func acquireInstanceLock() -> Bool {
+        let dir = NSString(string: "~/Library/Application Support/SodaLyrics").expandingTildeInPath
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let path = (dir as NSString).appendingPathComponent("instance.lock")
+        let fd = open(path, O_CREAT | O_RDWR, 0o644)
+        guard fd >= 0 else { return true }
+        if flock(fd, LOCK_EX | LOCK_NB) != 0 {
+            close(fd)
+            return false
+        }
+        lockFD = fd
+        return true
+    }
+
+    /// 清理残留的孤儿采集进程（多次运行/升级留下的 core 与 python 代理会干扰 mediaremoted
+    /// 的客户端投递——数据只给其中一个客户端，导致“不监听汽水音乐”）
+    func cleanupOrphanProcesses() {
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: "/bin/ps")
+        p.arguments = ["-axo", "pid,command"]
+        let pipe = Pipe()
+        p.standardOutput = pipe
+        p.standardError = FileHandle.nullDevice
+        do {
+            try p.run()
+            // 必须先在“进程退出前”消费管道：ps 全量输出（含超长命令行）超过 64KB 管道缓冲，
+            // 先 waitUntilExit 会因 ps 写满阻塞而永久死锁（此前导致启动卡死）
+            let out = String(data: pipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+            p.waitUntilExit()
+            var victimPIDs: [Int32] = []
+            for line in out.split(separator: "\n") {
+                let isCore = line.contains("libexec/soda-core") || line.contains("target/release/soda-lyrics")
+                let isProbe = line.contains("libmr_full.dylib")
+                if isCore || isProbe {
+                    NowPlayingStore.log("cleanup-match: \(line.prefix(80))")
+                }
+                guard isCore || isProbe else { continue }
+                if line.contains("grep") || line.contains("ps -axo") { continue }
+                guard let first = line.split(separator: " ").first else { continue }
+                if let pid = Int32(first), pid > 1 {
+                    victimPIDs.append(pid)
+                }
+            }
+            for pid in victimPIDs {
+                let r = kill(pid, SIGKILL)
+                NowPlayingStore.log("orphan kill pid=\(pid) rc=\(r)")
+            }
+            if !victimPIDs.isEmpty {
+                Thread.sleep(forTimeInterval: 0.5)
+            }
+        } catch {
+            NowPlayingStore.log("cleanup error: \(error.localizedDescription)")
+        }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // 单实例保护：已有实例直接退出（历史 bug：多实例互相干扰 MediaRemote 采集）
+        let locked = Self.acquireInstanceLock()
+        NowPlayingStore.log("instance lock acquired: \(locked)")
+        guard locked else {
+            NowPlayingStore.log("another instance is running, exiting")
+            NSApplication.shared.terminate(nil)
+            return
+        }
+        cleanupOrphanProcesses()
         Self.current = self
         let saved = UserDefaults.standard.double(forKey: "sodaBarWidth")
         if saved >= 120 { barWidth = CGFloat(saved) }

@@ -173,6 +173,7 @@ pub struct Collector {
     rate: f64,
     playing: bool,
     have_song: bool,
+    last_switch_at: Instant,
     last_title: String,
     last_artist: String,
     last_dur: f64,
@@ -191,6 +192,7 @@ impl Collector {
             rate: 1.0,
             playing: false,
             have_song: false,
+            last_switch_at: Instant::now(),
             last_title: String::new(),
             last_artist: String::new(),
             last_dur: 0.0,
@@ -234,6 +236,7 @@ impl Collector {
                         self.last_dur = r.duration_ms;
                         self.pos = 0.0;
                         self.last_at = now;
+                        self.last_switch_at = now;   // 切歌时刻（30s 播放窗口兜底）
                     }
                     _ => {
                         self.pending_title = Some(r.title.clone());
@@ -259,19 +262,33 @@ impl Collector {
         //       （播放中 dict 不刷新，但 ts 时刻已知，推算无漂移；
         //         汽水也有 ElapsedTime/Timestamp 键，但其 elC 短暂缺失时不能走此分支——会跳到快照值）
         //    c) 兜底增量推进（暂停冻结）
-        if self.playing && self.have_song {
-            if row_elc >= 0.0 {
+        if self.have_song {
+            // elC 防呆：明显超出曲目时长（或时长缺失时超过 1 小时）的会话级陈旧值视为无效，
+            // 否则 MR 会话挂起时会显示 13 小时之类的假进度
+            let elc_ok = row_elc >= 0.0 && {
+                if self.last_dur > 0.0 {
+                    row_elc <= self.last_dur + 30_000.0
+                } else {
+                    row_elc <= 3_600_000.0
+                }
+            };
+            if elc_ok {
+                // 无条件同步：汽水 dict 偶发 rate=0（playing 判定 false）时也要显示真实位置
                 self.pos = row_elc;
-            } else if row_adam > 0 && row_elapsed >= 0.0 && row_ts > 0.0 {
+            } else if self.playing && row_adam > 0 && row_elapsed >= 0.0 && row_ts > 0.0 {
                 let epoch_ms = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH)
                     .unwrap_or_default()
                     .as_millis() as f64;
                 self.pos = row_elapsed + (epoch_ms - row_ts) * row_rate;
             } else {
+                // 播放兜底：MR 时间轴失效（dur/rate 恒 0）时，切歌后 30 秒内按 1x 自推进，
+                // 让进度条先走起来；MR 恢复后 elC/elapsed 接管
+                let switching = self.last_switch_at.elapsed().as_secs() < 30;
                 let dt = now.duration_since(self.last_at).as_secs_f64() * 1000.0;
-                if dt > 0.0 && dt < 5000.0 {
-                    self.pos += dt * self.rate;
+                if (self.playing || switching) && dt > 0.0 && dt < 5000.0 {
+                    let r = if self.rate > 0.0 { self.rate } else { 1.0 };
+                    self.pos += dt * r;
                 }
             }
         }
