@@ -22,8 +22,8 @@
 class SodaLyrics < Formula
   desc "汽水音乐 macOS 菜单栏歌词助手（状态栏跑马灯 + 卡拉OK面板）"
   homepage "https://github.com/zephyr-cheung/soda-lyrics-mac"
-  url "https://github.com/zephyr-cheung/soda-lyrics-mac/archive/refs/tags/v0.3.6.tar.gz"
-  sha256 "6f98c09e02d25a776deb565b6249b222efbb26a2202cfabc76aaac3079a898ed"
+  url "https://github.com/zephyr-cheung/soda-lyrics-mac/archive/refs/tags/v0.3.7.tar.gz"
+  sha256 "9f91560e562797684bfeed317e50fe8282d38740fc355ab6fe0ec4838aa40b31"
   license "MIT"
 
   depends_on :macos => :ventura
