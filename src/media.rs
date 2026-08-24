@@ -180,6 +180,9 @@ pub struct Collector {
     playing: bool,
     have_song: bool,
     last_switch_at: Instant,
+    /// 暂停恢复后的外推模式：汽水恢复播放不重建 cpd（elC 会含暂停时长而超前），
+    /// 而 ElapsedTime 快照 + Timestamp 外推无漂移——恢复边沿进入此模式，切歌时退出
+    use_extrapolation: bool,
     last_title: String,
     last_artist: String,
     last_dur: f64,
@@ -199,6 +202,7 @@ impl Collector {
             playing: false,
             have_song: false,
             last_switch_at: Instant::now(),
+            use_extrapolation: false,
             last_title: String::new(),
             last_artist: String::new(),
             last_dur: 0.0,
@@ -243,6 +247,7 @@ impl Collector {
                         self.pos = 0.0;
                         self.last_at = now;
                         self.last_switch_at = now;   // 切歌时刻（30s 播放窗口兜底）
+                        self.use_extrapolation = false;
                     }
                     _ => {
                         self.pending_title = Some(r.title.clone());
@@ -262,8 +267,18 @@ impl Collector {
             row_adam = r.adam_id;
         }
 
+        // 1.5) 暂停→恢复边沿（rate 0→1 且 ElapsedTime 快照有效）：汽水恢复播放不会重建
+        //      CurrentPlaybackDate，elC 会含暂停时长变超前；改用 elapsed+ts 外推（无漂移）
+        // row_elapsed >= 0 即有效（缺省哨兵为 -1）：0s 处暂停恢复也允许外推
+        let resumed = !self.playing && row_rate > 0.0 && row_elapsed >= 0.0 && row_ts > 0.0;
+        if resumed && !self.use_extrapolation {
+            self.use_extrapolation = true;
+            crate::store::log(&format!("playback resumed, extrapolating from elapsed={} ts={}", row_elapsed, row_ts));
+        }
+
         // 2) 进度：真实优先
-        //    a) elC = now - CurrentPlaybackDate（汽水，系统口径精确）
+        //    a) 外推模式（暂停恢复后）：elapsed + (now - ts) * rate
+        //    b) elC = now - CurrentPlaybackDate（汽水，系统口径精确；暂停恢复后可能超前，已在 a 兜住）
         //    b) Apple Music（adamID>0）：ElapsedTime 快照 + Timestamp 推算 = elapsed + (now - ts) * rate
         //       （播放中 dict 不刷新，但 ts 时刻已知，推算无漂移；
         //         汽水也有 ElapsedTime/Timestamp 键，但其 elC 短暂缺失时不能走此分支——会跳到快照值）
@@ -278,7 +293,14 @@ impl Collector {
                     row_elc <= 3_600_000.0
                 }
             };
-            if elc_ok {
+            if self.use_extrapolation && row_elapsed >= 0.0 && row_ts > 0.0 {
+                // 暂停恢复后的外推模式（本次恢复快照新鲜，无漂移）
+                let epoch_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_millis() as f64;
+                self.pos = row_elapsed + (epoch_ms - row_ts) * row_rate;
+            } else if elc_ok {
                 // 无条件同步：汽水 dict 偶发 rate=0（playing 判定 false）时也要显示真实位置
                 self.pos = row_elc;
             } else if self.playing && row_adam > 0 && row_elapsed >= 0.0 && row_ts > 0.0 {

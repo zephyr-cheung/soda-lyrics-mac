@@ -80,6 +80,7 @@
   - **状态栏位图防御**：打开 popover 瞬间 AppKit 会重置 statusItem 的 layer contents（可能是 nil 或其他对象）——防御分支必须**无条件恢复**（`contents == nil || (contents as? NSImage) !== cachedBitmap` → 恢复），只比较 NSImage identity 会在别的类型时漏恢复。
   - **面板打开不滚到当前行**：`currentIndex` 由 snap 每 100ms 实时更新，滚动只挂 `onChange` 会漏掉“打开瞬间无变化”的场景 → `LyricListView.onAppear` 需主动 `scrollTo(currentIndex, anchor: .center)`（async 等布局完成后）。
   - 版本号在 `SettingsView.swift` 的 `AppInfo.version` 维护（发版时同步：`git tag vX.Y.Z` → tarball sha256 → formula → tap；`VERSION` 文件同样要更新，jsDelivr CDN 更新检查依赖它）。
+- **汽水暂停/恢复进度**：Electron 恢复播放时**不重建 `CurrentPlaybackDate`**（elC 含暂停时长会超前），但 `ElapsedTime` 快照准确——`media.rs` 在 **rate 0→1 边沿**进入外推模式（`pos = elapsed + (now−ts)×rate`，无漂移），**切歌时退出**回 elC；elapsed 哨兵 -1 与真实 0 可区分。
 - **shell 管道死锁**：`Process` 先 `waitUntilExit()` 再读 stdout 管道会死锁——输出超过 64KB 缓冲（如 `ps -axo` 全量含超长命令行）时子进程写满阻塞永不退出 → 必须**先 `readDataToEndOfFile()` 消费管道再等待退出**。
 - **swift build 缓存中毒**：`.build` 产物偶现 `Taskgated Invalid Signature`（启动即 SIGKILL、崩溃报告 `EXC_CRASH Code Signature Invalid`）→ `rm -rf swift-ui/.build` 完全重建即可（`codesign -dv` 核验 flags=adhoc,linker-signed）。
 

@@ -4,7 +4,7 @@ import SodaLyrics
 
 /// 应用信息（当前版本：发版时同步）
 enum AppInfo {
-    static let version = "0.3.7"
+    static let version = "0.3.8"
     static let repo = "https://github.com/zephyr-cheung/soda-lyrics-mac"
     static let author = "https://github.com/zephyr-cheung"
 }
