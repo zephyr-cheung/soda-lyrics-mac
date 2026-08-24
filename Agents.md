@@ -9,6 +9,15 @@
 - **进度**：真实进度来自系统 MediaRemote 的 `CurrentPlaybackDate`（`elC = 墙钟 − CurrentPlaybackDate`），与播放器同步；非自推进。
 - **白名单/路由**：`com.soda.music` → 汽水 Provider（volcengine）；`com.apple.Music`（按 iTunesStoreIdentifier>0 判定）→ Apple 多源引擎；其他 App 播放自动清空状态。
 
+## 进程链守护（重要）
+
+三进程**缺一即全退**（launchd KeepAlive 拉回全新三件套，永无孤儿累积）：
+- **python 代理**：循环里 `os.getppid() == 1`（父 core 死）→ 自退
+- **Rust core**：主循环每 100ms 查 `libc::getppid() <= 1`（父 Swift 死）→ 自退；reader 线程管道 EOF（python 死）→ `exit(0)`
+- **Swift**：core 管道 EOF → `NSApplication.shared.terminate(nil)`（KeepAlive 自动拉回）
+- Swift 另有 **flock 单实例锁**（`~/Library/Application Support/SodaLyrics/instance.lock`）双开秒退；启动时按路径清理孤儿采集进程（`libexec/soda-core` / `target/release/soda-lyrics` / `libmr_full.dylib`）
+- 历史教训：多实例共存会干扰 mediaremoted（数据只投递给其中一个客户端）→ “不监听汽水/无进度”；孤儿来自多次 run/升级残留（brew 杀 Swift 不连带子进程）
+
 ## 架构（三进程）
 
 1. **Swift UI**（`swift-ui/`，SwiftPM + AppKit）
@@ -71,6 +80,8 @@
   - **状态栏位图防御**：打开 popover 瞬间 AppKit 会重置 statusItem 的 layer contents（可能是 nil 或其他对象）——防御分支必须**无条件恢复**（`contents == nil || (contents as? NSImage) !== cachedBitmap` → 恢复），只比较 NSImage identity 会在别的类型时漏恢复。
   - **面板打开不滚到当前行**：`currentIndex` 由 snap 每 100ms 实时更新，滚动只挂 `onChange` 会漏掉“打开瞬间无变化”的场景 → `LyricListView.onAppear` 需主动 `scrollTo(currentIndex, anchor: .center)`（async 等布局完成后）。
   - 版本号在 `SettingsView.swift` 的 `AppInfo.version` 维护（发版时同步：`git tag vX.Y.Z` → tarball sha256 → formula → tap；`VERSION` 文件同样要更新，jsDelivr CDN 更新检查依赖它）。
+- **shell 管道死锁**：`Process` 先 `waitUntilExit()` 再读 stdout 管道会死锁——输出超过 64KB 缓冲（如 `ps -axo` 全量含超长命令行）时子进程写满阻塞永不退出 → 必须**先 `readDataToEndOfFile()` 消费管道再等待退出**。
+- **swift build 缓存中毒**：`.build` 产物偶现 `Taskgated Invalid Signature`（启动即 SIGKILL、崩溃报告 `EXC_CRASH Code Signature Invalid`）→ `rm -rf swift-ui/.build` 完全重建即可（`codesign -dv` 核验 flags=adhoc,linker-signed）。
 
 ## 开发命令
 

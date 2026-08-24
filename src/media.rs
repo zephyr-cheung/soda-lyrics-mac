@@ -78,7 +78,7 @@ pub fn spawn_stream_source(interval_ms: u64) -> (Option<Child>, Receiver<StreamR
         return (None, rx);
     };
     let py = format!(
-        "import ctypes,time,sys\nlib=ctypes.CDLL(sys.argv[1])\nf=lib.mr_get_full_json\nwhile True:\n    f()\n    sys.stdout.flush()\n    time.sleep({})\n",
+        "import ctypes,time,sys,os\nlib=ctypes.CDLL(sys.argv[1])\nf=lib.mr_get_full_json\nwhile True:\n    f()\n    sys.stdout.flush()\n    if os.getppid() == 1:\n        break\n    time.sleep({})\n",
         (interval_ms.max(200) as f64) / 1000.0
     );
     match Command::new(locate_python())
@@ -96,7 +96,9 @@ pub fn spawn_stream_source(interval_ms: u64) -> (Option<Child>, Receiver<StreamR
                 std::thread::spawn(move || {
                     let reader = BufReader::new(pipe);
                     let mut line_n = 0usize;
+                    let mut py_alive = true;
                     for line in reader.lines() {
+                        py_alive = true;
                         line_n += 1;
                         if line_n % 25 == 0 {
                             crate::store::log(&format!("stream rows: {}", line_n));
@@ -129,6 +131,10 @@ pub fn spawn_stream_source(interval_ms: u64) -> (Option<Child>, Receiver<StreamR
                             }
                         }
                     }
+                    // python 代理已退出（EOF/损坏）→ core 无采集源，整体退出不留孤儿；
+                    // Swift 收 core EOF 后也退出，由 launchd KeepAlive 拉回完整三件套
+                    crate::store::log("python collector exited, core terminating");
+                    std::process::exit(0);
                 });
             }
             (Some(child), rx)

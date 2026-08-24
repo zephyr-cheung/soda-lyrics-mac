@@ -264,6 +264,11 @@ fn main() {
         let line = serde_json::to_string(&snap_msg).unwrap_or_default();
         let _ = writeln!(out, "{}", line);
         let _ = out.flush();
+        // 进程链守护：Swift（父进程）已退出 → core 自己退出，不留孤儿
+        if unsafe { libc::getppid() } <= 1 {
+            store::log("parent gone, core terminating");
+            std::process::exit(0);
+        }
         std::thread::sleep(Duration::from_millis(100));
     }
 }

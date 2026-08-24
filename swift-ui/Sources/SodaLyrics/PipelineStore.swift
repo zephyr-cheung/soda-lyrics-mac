@@ -87,7 +87,15 @@ public final class NowPlayingStore: ObservableObject {
         proc = p
         pipe.fileHandleForReading.readabilityHandler = { [weak self] h in
             let data = h.availableData
-            guard !data.isEmpty, let self else { return }
+            // EOF（core 已退出）→ 自身退出，避免留孤儿；launchd KeepAlive 会自动拉回新产品
+            if data.isEmpty {
+                DispatchQueue.main.async {
+                    Self.log("core pipe EOF, terminating to keep process chain clean")
+                    NSApplication.shared.terminate(nil)
+                }
+                return
+            }
+            guard let self else { return }
             let text = String(data: data, encoding: .utf8) ?? ""
             Task { @MainActor in self.consume(text) }
         }
